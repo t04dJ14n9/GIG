@@ -93,7 +93,6 @@ func TestCorrectnessCaseCoverageAudit(t *testing.T) {
 	}
 
 	for _, set := range sets {
-		set := set
 		t.Run(set.name, func(t *testing.T) {
 			exported := exportedFunctions(t, set.name, set.src)
 			exportedSet := make(map[string]bool, len(exported))

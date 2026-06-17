@@ -44,6 +44,7 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 	}
 
 	assignable := false
+	interpretedAssignable := false
 	if rv.IsValid() {
 		// Type assertion compares the dynamic type to the asserted
 		// type. Go's runtime only allows the exact type or types
@@ -56,6 +57,10 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 			assignable = rv.Type() == dst || rv.Type().AssignableTo(dst)
 		}
 	}
+	if !assignable {
+		interpretedAssignable = p.interpretedValueImplementsInterface(x, instr.AssertedType)
+		assignable = interpretedAssignable
+	}
 
 	switch {
 	case instr.CommaOk:
@@ -64,12 +69,27 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 		if !ok {
 			return contNext, nil, fmt.Errorf("interp: TypeAssert CommaOk type not a tuple: %s", instr.Type())
 		}
-		holderType, err := p.resolver.ResolveType(tt)
-		if err != nil {
-			return contNext, nil, err
+		var holder reflect.Value
+		if interpretedAssignable {
+			holderType := reflect.StructOf([]reflect.StructField{
+				{Name: "F0", Type: reflect.TypeOf((*any)(nil)).Elem()},
+				{Name: "F1", Type: reflect.TypeOf(false)},
+			})
+			holder = reflect.New(holderType).Elem()
+			if rv.IsValid() {
+				holder.Field(0).Set(rv)
+			}
+			holder.Field(1).SetBool(true)
+		} else {
+			holderType, err := p.resolver.ResolveType(tt)
+			if err != nil {
+				return contNext, nil, err
+			}
+			holder = reflect.New(holderType).Elem()
 		}
-		holder := reflect.New(holderType).Elem()
-		if assignable {
+		if interpretedAssignable {
+			// Already populated above.
+		} else if assignable {
 			converted := rv
 			if rv.Type() != dst {
 				converted = rv.Convert(dst)
@@ -87,6 +107,10 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 			}
 			panic(fmt.Errorf("interface conversion: %s is not %s", rv.Type(), dst))
 		}
+		if interpretedAssignable {
+			fr.setCell(instr, x)
+			return contNext, nil, nil
+		}
 		converted := rv
 		if rv.Type() != dst {
 			converted = rv.Convert(dst)
@@ -98,4 +122,35 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 		fr.setCell(instr, out)
 	}
 	return contNext, nil, nil
+}
+
+func (p *program) interpretedValueImplementsInterface(receiver value.Value, typ types.Type) bool {
+	iface, ok := typ.Underlying().(*types.Interface)
+	if !ok {
+		return false
+	}
+	iface = iface.Complete()
+	for i := 0; i < iface.NumMethods(); i++ {
+		method := iface.Method(i)
+		fn := p.lookupInterpretedMethod(receiver, method.Name())
+		if fn == nil || !interpretedMethodMatchesInterface(fn.Signature, method.Type()) {
+			return false
+		}
+	}
+	return true
+}
+
+func interpretedMethodMatchesInterface(have *types.Signature, want types.Type) bool {
+	wantSig, ok := want.(*types.Signature)
+	if !ok || have == nil {
+		return false
+	}
+	haveSig := types.NewSignatureType(
+		nil,
+		nil, nil,
+		have.Params(),
+		have.Results(),
+		have.Variadic(),
+	)
+	return types.Identical(haveSig, wantSig)
 }

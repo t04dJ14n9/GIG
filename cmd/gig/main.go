@@ -52,7 +52,7 @@ func main() {
 		{Name: "init", Usage: "gig init -package <name>", Run: commands.RunInit},
 		{Name: "gen", Usage: "gig gen <dir>", Run: commands.RunGen},
 		{Name: "repl", Usage: "gig repl", Run: commands.RunREPL},
-		{Name: "dump", Usage: "gig dump <file|->", Run: commands.RunDump},
+		{Name: "dump", Usage: "gig dump <file|-> | --raw <source>", Run: commands.RunDump},
 	}
 
 	flag.Usage = printUsage(cmds)
@@ -95,6 +95,7 @@ func printUsage(cmds []command) func() {
 		fmt.Fprintf(os.Stderr, "\nREPL:\n")
 		fmt.Fprintf(os.Stderr, "  gig repl                           # Start interactive Go REPL\n")
 		fmt.Fprintf(os.Stderr, "\nDebugging:\n")
-		fmt.Fprintf(os.Stderr, "  gig dump program.go                # Print SSA and bytecode\n")
+		fmt.Fprintf(os.Stderr, "  gig dump program.go                # Print SSA\n")
+		fmt.Fprintf(os.Stderr, "  gig dump --raw 'package main...'   # Dump inline source\n")
 	}
 }

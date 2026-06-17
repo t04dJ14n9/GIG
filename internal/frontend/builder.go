@@ -163,10 +163,18 @@ func (e *BuildError) Error() string {
 
 func wrapPackageMain(src string) string {
 	src = strings.TrimSpace(src)
-	if !strings.HasPrefix(src, "package ") {
+	if !hasPackageClause(src) {
 		src = "package main\n\n" + src
 	}
 	return src
+}
+
+func hasPackageClause(src string) bool {
+	if src == "" {
+		return false
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "", src, parser.PackageClauseOnly)
+	return err == nil && file != nil && file.Name != nil
 }
 
 func checkBannedImports(fset *token.FileSet, file *ast.File, banned []string) error {

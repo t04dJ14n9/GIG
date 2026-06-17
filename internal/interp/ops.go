@@ -288,7 +288,7 @@ func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Val
 		// IndexAddr / Set must operate on the actual storage.
 		if rv, ok := x.Reflect(); ok && rv.Kind() == reflect.Ptr {
 			if rv.IsNil() {
-				return contNext, nil, fmt.Errorf("interp: nil pointer dereference")
+				panic("runtime error: invalid memory address or nil pointer dereference")
 			}
 			elem := rv.Elem()
 			return p.storeLoadedReflect(fr, instr, elem)
@@ -832,6 +832,11 @@ func (p *program) assignReflectValue(dst reflect.Value, val value.Value) error {
 	if err != nil {
 		return err
 	}
+	if coerced, ok, err := coerceReflectValue(src, dst.Type()); err != nil {
+		return err
+	} else if ok {
+		src = coerced
+	}
 	// Slice-of-concrete → slice-of-interface{} can show up after the
 	// type-resolver breaks a self-referential cycle by substituting
 	// `any` for the back-edge field. reflect.Set rejects the direct
@@ -848,6 +853,52 @@ func (p *program) assignReflectValue(dst reflect.Value, val value.Value) error {
 	}
 	dst.Set(src)
 	return nil
+}
+
+func coerceReflectValue(src reflect.Value, dstType reflect.Type) (reflect.Value, bool, error) {
+	if !src.IsValid() {
+		return reflect.Zero(dstType), true, nil
+	}
+	if src.Type().AssignableTo(dstType) {
+		return src, true, nil
+	}
+	if src.Type().ConvertibleTo(dstType) {
+		return src.Convert(dstType), true, nil
+	}
+	if src.Kind() == reflect.Interface && !src.IsNil() {
+		return coerceReflectValue(src.Elem(), dstType)
+	}
+	if src.Kind() == reflect.Ptr && dstType.Kind() == reflect.Ptr &&
+		src.Type().Elem().Kind() == reflect.Struct && dstType.Elem().Kind() == reflect.Struct {
+		if src.IsNil() {
+			return reflect.Zero(dstType), true, nil
+		}
+		elem, ok, err := coerceReflectValue(src.Elem(), dstType.Elem())
+		if err != nil || !ok {
+			return reflect.Value{}, ok, err
+		}
+		ptr := reflect.New(dstType.Elem())
+		ptr.Elem().Set(elem)
+		return ptr, true, nil
+	}
+	if src.Kind() == reflect.Struct && dstType.Kind() == reflect.Struct {
+		if src.NumField() != dstType.NumField() {
+			return reflect.Value{}, false, nil
+		}
+		out := reflect.New(dstType).Elem()
+		for i := 0; i < dstType.NumField(); i++ {
+			if src.Type().Field(i).Name != dstType.Field(i).Name {
+				return reflect.Value{}, false, nil
+			}
+			field, ok, err := coerceReflectValue(src.Field(i), dstType.Field(i).Type)
+			if err != nil || !ok {
+				return reflect.Value{}, ok, err
+			}
+			out.Field(i).Set(field)
+		}
+		return out, true, nil
+	}
+	return reflect.Value{}, false, nil
 }
 
 // derefSSAType returns the pointee type of a *T SSA type. It is the SSA

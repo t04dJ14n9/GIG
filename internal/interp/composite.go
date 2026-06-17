@@ -164,12 +164,23 @@ func (p *program) runMakeInterface(fr *frame, instr *ssa.MakeInterface) (continu
 		innerRV = innerRV.Convert(innerHint)
 	}
 	holder := reflect.New(ifaceRT).Elem()
+	boxed := false
 	if innerRV.IsValid() {
 		if innerRV.Type().AssignableTo(ifaceRT) {
 			holder.Set(innerRV)
+			boxed = true
 		} else if innerRV.Type().ConvertibleTo(ifaceRT) {
 			holder.Set(innerRV.Convert(ifaceRT))
+			boxed = true
 		}
+	}
+	if !boxed && p.interpretedValueImplementsInterface(x, instr.Type()) {
+		anyHolder := reflect.New(reflect.TypeOf((*any)(nil)).Elem()).Elem()
+		if innerRV.IsValid() {
+			anyHolder.Set(innerRV)
+		}
+		fr.setCell(instr, value.MakeInterfaceBox(anyHolder))
+		return contNext, nil, nil
 	}
 	fr.setCell(instr, value.MakeInterfaceBox(holder))
 	return contNext, nil, nil
@@ -190,7 +201,7 @@ func (p *program) runField(fr *frame, instr *ssa.Field) (continuation, []value.V
 	// explicit Load); unwrap both so we land on a struct.
 	for rv.Kind() == reflect.Interface || rv.Kind() == reflect.Ptr {
 		if rv.Kind() == reflect.Ptr && rv.IsNil() {
-			return contNext, nil, fmt.Errorf("interp: nil pointer dereference in Field")
+			panic("runtime error: invalid memory address or nil pointer dereference")
 		}
 		rv = rv.Elem()
 	}
@@ -228,7 +239,7 @@ func (p *program) runFieldAddr(fr *frame, instr *ssa.FieldAddr) (continuation, [
 	}
 	if rv.Kind() == reflect.Ptr {
 		if rv.IsNil() {
-			return contNext, nil, fmt.Errorf("interp: nil pointer dereference in FieldAddr")
+			panic("runtime error: invalid memory address or nil pointer dereference")
 		}
 		rv = rv.Elem()
 	}
@@ -274,7 +285,7 @@ func (p *program) runIndexAddr(fr *frame, instr *ssa.IndexAddr) (continuation, [
 	}
 	if rv.Kind() == reflect.Ptr {
 		if rv.IsNil() {
-			return contNext, nil, fmt.Errorf("interp: nil pointer dereference in IndexAddr")
+			panic("runtime error: invalid memory address or nil pointer dereference")
 		}
 		rv = rv.Elem()
 	}

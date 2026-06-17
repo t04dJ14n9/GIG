@@ -14,8 +14,10 @@ import (
 // RunDump implements the "gig dump" subcommand.
 func RunDump(fs *flag.FlagSet, args []string) error {
 	allowPanic := fs.Bool("allow-panic", false, "allow panic/recover/defer compilation while dumping")
+	rawSource := fs.String("raw", "", "raw source code to dump instead of reading <file|->")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: gig dump [flags] <file|->\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: gig dump [flags] <file|->\n")
+		fmt.Fprintf(os.Stderr, "       gig dump --raw <source>\n\n")
 		fmt.Fprintf(os.Stderr, "Compiles Gig source and prints readable SSA.\n")
 		fmt.Fprintf(os.Stderr, "Use '-' to read source from stdin.\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
@@ -23,6 +25,12 @@ func RunDump(fs *flag.FlagSet, args []string) error {
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *rawSource != "" {
+		if fs.NArg() != 0 {
+			return fmt.Errorf("--raw cannot be used with a source file argument")
+		}
+		return dumpSource(*rawSource, *allowPanic)
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("source file argument required")
@@ -32,12 +40,15 @@ func RunDump(fs *flag.FlagSet, args []string) error {
 	if err != nil {
 		return err
 	}
+	return dumpSource(string(source), *allowPanic)
+}
 
+func dumpSource(source string, allowPanic bool) error {
 	var opts []gig.BuildOption
-	if *allowPanic {
+	if allowPanic {
 		opts = append(opts, gig.WithAllowPanic())
 	}
-	dump, err := gig.DebugDump(string(source), opts...)
+	dump, err := gig.DebugDump(source, opts...)
 	if err != nil {
 		return err
 	}

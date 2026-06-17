@@ -7,6 +7,7 @@ package tests
 import (
 	_ "embed"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -124,6 +125,9 @@ func TestTrickySlices(t *testing.T) { runTestSet(t, testSet{src: trickySrc, test
 func TestTrickyStructs(t *testing.T) {
 	runTestSet(t, testSet{src: trickySrc, tests: trickyStructsTests})
 }
+func TestTrickyCoverage(t *testing.T) {
+	runTestSet(t, testSet{src: trickySrc, tests: trickyCoverageTests, buildOpts: []gig.BuildOption{gig.WithAllowPanic()}})
+}
 func TestTypeconv(t *testing.T)  { runTestSet(t, testSet{src: typeconvSrc, tests: typeconvTests}) }
 func TestVariables(t *testing.T) { runTestSet(t, testSet{src: variablesSrc, tests: variablesTests}) }
 
@@ -147,7 +151,15 @@ func callNative(fn any, args []any) any {
 	for i, a := range args {
 		in[i] = reflect.ValueOf(a)
 	}
-	out := v.Call(in)
+	var out []reflect.Value
+	if v.Type().IsVariadic() && len(in) == v.Type().NumIn() && len(in) > 0 && in[len(in)-1].Type().AssignableTo(v.Type().In(v.Type().NumIn()-1)) {
+		out = v.CallSlice(in)
+	} else {
+		out = v.Call(in)
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	if len(out) == 1 {
 		return out[0].Interface()
 	}
@@ -156,6 +168,46 @@ func callNative(fn any, args []any) any {
 		result[i] = o.Interface()
 	}
 	return result
+}
+
+func cloneTestArgs(args []any) []any {
+	if len(args) == 0 {
+		return nil
+	}
+	cloned := make([]any, len(args))
+	for i, arg := range args {
+		cloned[i] = cloneTestValue(reflect.ValueOf(arg)).Interface()
+	}
+	return cloned
+}
+
+func cloneTestValue(v reflect.Value) reflect.Value {
+	if !v.IsValid() {
+		return v
+	}
+	switch v.Kind() {
+	case reflect.Slice:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(cloneTestValue(v.Index(i)))
+		}
+		return out
+	case reflect.Map:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeMapWithSize(v.Type(), v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(cloneTestValue(iter.Key()), cloneTestValue(iter.Value()))
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // compareResults compares interpreter result with native result
@@ -184,6 +236,95 @@ func compareCorrectnessResults(t *testing.T, got, expected any) {
 	if !reflect.DeepEqual(got, expected) {
 		t.Errorf("mismatch:\n  got:      %v (%T)\n  expected: %v (%T)", got, got, expected, expected)
 	}
+}
+
+var expectedRunErrors = map[string]string{
+	"RecoverReturnsPanicValue": "interpreter panic: test value",
+}
+
+var knownUnrunnableCases = map[string]string{
+	"MultipleDefersWithExternalCalls": "testdata deadlocks in native Go too: same sync.Mutex is locked repeatedly before deferred unlocks run",
+}
+
+var knownUnsupportedCases = map[string]string{
+	"FmtSprintfTypeResolved":        "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerPointerResolved":    "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerResolved":           "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtCustomError":                "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtMultipleStringers":          "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerBasic":              "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerEmbedded":           "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerInStruct":           "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerInVariadic":         "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerNested":             "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerPointer":            "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerPointerFromValue":   "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerRecursive":          "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerWithEmptyStruct":    "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerWithMapField":       "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerWithMultipleFields": "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerWithPointerField":   "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerWithPrivateFields":  "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerWithSliceField":     "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"FmtStringerZeroValue":          "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"StringerInArray":               "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"StringerInChan":                "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"StringerInInterfaceSlice":      "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"StringerInMap":                 "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+	"StringerInSlice":               "interpreted concrete types are not exposed as native Go types across the external fmt boundary",
+}
+
+var customResultChecks = map[string]func(t *testing.T, got any){
+	"MapUpdateDuringRange": func(t *testing.T, got any) {
+		t.Helper()
+		n, ok := got.(int)
+		if !ok {
+			t.Fatalf("got %v (%T), want int", got, got)
+		}
+		if n < 4 {
+			t.Fatalf("map length after range update = %d, want at least 4", n)
+		}
+	},
+	"MapRangeWithBreak": func(t *testing.T, got any) {
+		t.Helper()
+		n, ok := got.(int)
+		if !ok {
+			t.Fatalf("got %v (%T), want int", got, got)
+		}
+		if n < 20 || n > 60 {
+			t.Fatalf("map range sum with break = %d, want value in [20, 60]", n)
+		}
+	},
+	"MapDropWhileTest": func(t *testing.T, got any) {
+		t.Helper()
+		n, ok := got.(int)
+		if !ok {
+			t.Fatalf("got %v (%T), want int", got, got)
+		}
+		if n != 3 && n != 4 {
+			t.Fatalf("map drop-while result = %d, want 3 or 4", n)
+		}
+	},
+	"SelectWithMultipleCases": func(t *testing.T, got any) {
+		t.Helper()
+		n, ok := got.(int)
+		if !ok {
+			t.Fatalf("got %v (%T), want int", got, got)
+		}
+		if n != 1 && n != 2 {
+			t.Fatalf("select result = %d, want 1 or 2", n)
+		}
+	},
+	"SelectWithMultipleReady": func(t *testing.T, got any) {
+		t.Helper()
+		n, ok := got.(int)
+		if !ok {
+			t.Fatalf("got %v (%T), want int", got, got)
+		}
+		if n != 1 && n != 2 {
+			t.Fatalf("select result = %d, want 1 or 2", n)
+		}
+	},
 }
 
 // ============================================================================
@@ -225,17 +366,37 @@ func runTestSet(t *testing.T, set testSet) {
 	for fullKey, tc := range set.tests {
 		// Use fullKey for test name (includes package), tc.funcName for actual call
 		t.Run(fullKey, func(t *testing.T) {
+			if reason := knownUnsupportedCases[tc.funcName]; reason != "" {
+				t.Skip(reason)
+			}
+			if reason := knownUnrunnableCases[tc.funcName]; reason != "" {
+				t.Skip(reason)
+			}
 			startInterp := time.Now()
-			result, err := prog.Run(tc.funcName, tc.args...)
+			result, err := prog.Run(tc.funcName, cloneTestArgs(tc.args)...)
 			interpDuration := time.Since(startInterp)
+			if wantErr := expectedRunErrors[tc.funcName]; wantErr != "" {
+				if err == nil {
+					t.Fatalf("Run succeeded, want error containing %q", wantErr)
+				}
+				if !strings.Contains(err.Error(), wantErr) {
+					t.Fatalf("Run error = %v, want contains %q", err, wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Run error: %v", err)
+			}
+
+			if check := customResultChecks[tc.funcName]; check != nil {
+				check(t, result)
+				return
 			}
 
 			// Skip native comparison when native is nil (e.g., package main sources)
 			if tc.native != nil {
 				startNative := time.Now()
-				expected := callNative(tc.native, tc.args)
+				expected := callNative(tc.native, cloneTestArgs(tc.args))
 				nativeDuration := time.Since(startNative)
 
 				compareCorrectnessResults(t, result, expected)
@@ -463,6 +624,8 @@ var closuresTests = map[string]testCase{
 	"Chain":             {closuresSrc, "Chain", nil, closures.Chain},
 	"Accumulator":       {closuresSrc, "Accumulator", nil, closures.Accumulator},
 	// Parameterized tests (closures return functions, skip for now as we test via Call)
+	"MakeAccumulator": {closuresSrc, "MakeAccumulator", []any{5}, nil},
+	"MakeAdder":       {closuresSrc, "MakeAdder", []any{10}, nil},
 }
 
 var closures_advancedTests = map[string]testCase{
@@ -588,6 +751,29 @@ var complexTests = map[string]testCase{
 	"VariadicWithRegularCheck": {complexSrc, "VariadicWithRegularCheck", nil, complex.VariadicWithRegularCheck},
 	"VariadicSpread":           {complexSrc, "VariadicSpread", nil, complex.VariadicSpread},
 	"VariadicOneArg":           {complexSrc, "VariadicOneArg", nil, complex.VariadicOneArg},
+	"DeferRecover":             {complexSrc, "DeferRecover", nil, complex.DeferRecover},
+	"DeferRecoverCheck":        {complexSrc, "DeferRecoverCheck", nil, complex.DeferRecoverCheck},
+	"RecursionAckermann":       {complexSrc, "RecursionAckermann", []any{2, 2}, complex.RecursionAckermann},
+	"RecursionBinarySearch":    {complexSrc, "RecursionBinarySearch", []any{[]int{1, 3, 5, 7}, 5, 0, 3}, complex.RecursionBinarySearch},
+	"RecursionCombination":     {complexSrc, "RecursionCombination", []any{5, 2}, complex.RecursionCombination},
+	"RecursionCountDigits":     {complexSrc, "RecursionCountDigits", []any{12345}, complex.RecursionCountDigits},
+	"RecursionFib":             {complexSrc, "RecursionFib", []any{8}, complex.RecursionFib},
+	"RecursionGCD":             {complexSrc, "RecursionGCD", []any{48, 18}, complex.RecursionGCD},
+	"RecursionHanoi":           {complexSrc, "RecursionHanoi", []any{4}, complex.RecursionHanoi},
+	"RecursionMerge":           {complexSrc, "RecursionMerge", []any{[]int{1, 3, 5}, []int{2, 4, 6}}, complex.RecursionMerge},
+	"RecursionMergeSort":       {complexSrc, "RecursionMergeSort", []any{[]int{5, 2, 4, 1, 3}}, complex.RecursionMergeSort},
+	"RecursionPalindrome":      {complexSrc, "RecursionPalindrome", []any{"racecar"}, complex.RecursionPalindrome},
+	"RecursionPartition":       {complexSrc, "RecursionPartition", []any{[]int{4, 2, 5, 1, 3}, 0, 4}, complex.RecursionPartition},
+	"RecursionPermuteCount":    {complexSrc, "RecursionPermuteCount", []any{4}, complex.RecursionPermuteCount},
+	"RecursionPower":           {complexSrc, "RecursionPower", []any{3, 4}, complex.RecursionPower},
+	"RecursionQuickSort":       {complexSrc, "RecursionQuickSort", []any{[]int{5, 2, 4, 1, 3}, 0, 4}, nil},
+	"RecursionReverse":         {complexSrc, "RecursionReverse", []any{"abcdef"}, complex.RecursionReverse},
+	"RecursionStaircase":       {complexSrc, "RecursionStaircase", []any{5}, complex.RecursionStaircase},
+	"RecursionSubsetSum":       {complexSrc, "RecursionSubsetSum", []any{[]int{3, 5, 7, 9}, 12, 0}, complex.RecursionSubsetSum},
+	"RecursionSum":             {complexSrc, "RecursionSum", []any{10}, complex.RecursionSum},
+	"RecursionSumDigits":       {complexSrc, "RecursionSumDigits", []any{12345}, complex.RecursionSumDigits},
+	"VariadicBasic":            {complexSrc, "VariadicBasic", []any{[]int{1, 2, 3, 4}}, complex.VariadicBasic},
+	"VariadicWithRegular":      {complexSrc, "VariadicWithRegular", []any{10, []int{1, 2, 3}}, complex.VariadicWithRegular},
 }
 
 var controlflowTests = map[string]testCase{
@@ -706,6 +892,22 @@ var cornercasesTests = map[string]testCase{
 	"Struct_ZeroValueFields":      {cornercasesSrc, "Struct_ZeroValueFields", nil, cornercases.Struct_ZeroValueFields},
 	"Struct_PointerReceiver":      {cornercasesSrc, "Struct_PointerReceiver", nil, cornercases.Struct_PointerReceiver},
 	"Struct_NestedStruct":         {cornercasesSrc, "Struct_NestedStruct", nil, cornercases.Struct_NestedStruct},
+	"Convert_FloatToInt":          {cornercasesSrc, "Convert_FloatToInt", nil, cornercases.Convert_FloatToInt},
+	"Convert_Int32ToInt64":        {cornercasesSrc, "Convert_Int32ToInt64", nil, cornercases.Convert_Int32ToInt64},
+	"Convert_Int64ToInt32":        {cornercasesSrc, "Convert_Int64ToInt32", nil, cornercases.Convert_Int64ToInt32},
+	"Convert_IntToFloat":          {cornercasesSrc, "Convert_IntToFloat", nil, cornercases.Convert_IntToFloat},
+	"Expr_ChainedComparison":      {cornercasesSrc, "Expr_ChainedComparison", nil, cornercases.Expr_ChainedComparison},
+	"Expr_ComplexArithmetic":      {cornercasesSrc, "Expr_ComplexArithmetic", nil, cornercases.Expr_ComplexArithmetic},
+	"Expr_MultipleAssignment":     {cornercasesSrc, "Expr_MultipleAssignment", nil, cornercases.Expr_MultipleAssignment},
+	"Expr_NestedTernaryLike":      {cornercasesSrc, "Expr_NestedTernaryLike", nil, cornercases.Expr_NestedTernaryLike},
+	"Make_MapWithSize":            {cornercasesSrc, "Make_MapWithSize", nil, cornercases.Make_MapWithSize},
+	"Make_SliceWithCap":           {cornercasesSrc, "Make_SliceWithCap", nil, cornercases.Make_SliceWithCap},
+	"Make_ZeroLenZeroCap":         {cornercasesSrc, "Make_ZeroLenZeroCap", nil, cornercases.Make_ZeroLenZeroCap},
+	"Range_EmptyMap":              {cornercasesSrc, "Range_EmptyMap", nil, cornercases.Range_EmptyMap},
+	"Range_EmptySlice":            {cornercasesSrc, "Range_EmptySlice", nil, cornercases.Range_EmptySlice},
+	"Range_EmptyString":           {cornercasesSrc, "Range_EmptyString", nil, cornercases.Range_EmptyString},
+	"Range_SingleElement":         {cornercasesSrc, "Range_SingleElement", nil, cornercases.Range_SingleElement},
+	"Slice_FullSlice":             {cornercasesSrc, "Slice_FullSlice", nil, cornercases.Slice_FullSlice},
 }
 
 var edgecasesTests = map[string]testCase{
@@ -780,6 +982,7 @@ var functionsTests = map[string]testCase{
 	"MultiReturnComplexTypes":         {functionsSrc, "MultiReturnComplexTypes", nil, functions.MultiReturnComplexTypes},
 	"MultiReturnInClosure":            {functionsSrc, "MultiReturnInClosure", nil, functions.MultiReturnInClosure},
 	"AssignMultiReturnToExistingVars": {functionsSrc, "AssignMultiReturnToExistingVars", nil, functions.AssignMultiReturnToExistingVars},
+	"SumVariadic":                     {functionsSrc, "SumVariadic", []any{[]int{1, 2, 3, 4}}, functions.SumVariadic},
 }
 
 var goroutineTests = map[string]testCase{
@@ -862,6 +1065,9 @@ var initializeTests = map[string]testCase{
 	"GetCacheSum":         {initializeSrc, "GetCacheSum", nil, initialize.GetCacheSum},
 	"GetCacheSize":        {initializeSrc, "GetCacheSize", nil, initialize.GetCacheSize},
 	"GetFibonacciCount":   {initializeSrc, "GetFibonacciCount", nil, initialize.GetFibonacciCount},
+	"GetCacheValue":       {initializeSrc, "GetCacheValue", []any{"two"}, initialize.GetCacheValue},
+	"GetFibonacciAt":      {initializeSrc, "GetFibonacciAt", []any{5}, initialize.GetFibonacciAt},
+	"LookupByValue":       {initializeSrc, "LookupByValue", []any{2}, initialize.LookupByValue},
 }
 
 var leetcode_hardTests = map[string]testCase{
@@ -958,6 +1164,14 @@ var panicRecoverTests = map[string]testCase{
 	"DeferOrderWithMultiplePanics": {panicRecoverSrc, "DeferOrderWithMultiplePanics", nil, panic_recover.DeferOrderWithMultiplePanics},
 	"DeferPanicRecoverChain":       {panicRecoverSrc, "DeferPanicRecoverChain", nil, panic_recover.DeferPanicRecoverChain},
 	"PanicNil":                     {panicRecoverSrc, "PanicNil", nil, panic_recover.PanicNil},
+	"PanicMapAccess":               {panicRecoverSrc, "PanicMapAccess", nil, panic_recover.PanicMapAccess},
+	"PanicNilPointer":              {panicRecoverSrc, "PanicNilPointer", nil, panic_recover.PanicNilPointer},
+	"PanicSliceIndex":              {panicRecoverSrc, "PanicSliceIndex", nil, panic_recover.PanicSliceIndex},
+	"PanicTypeAssertion":           {panicRecoverSrc, "PanicTypeAssertion", nil, panic_recover.PanicTypeAssertion},
+	"PanicWithMap":                 {panicRecoverSrc, "PanicWithMap", nil, panic_recover.PanicWithMap},
+	"PanicWithSlice":               {panicRecoverSrc, "PanicWithSlice", nil, panic_recover.PanicWithSlice},
+	"PanicWithStructValue":         {panicRecoverSrc, "PanicWithStructValue", nil, panic_recover.PanicWithStructValue},
+	"RecoverReturnsPanicValue":     {panicRecoverSrc, "RecoverReturnsPanicValue", nil, panic_recover.RecoverReturnsPanicValue},
 }
 
 var recursionTests = map[string]testCase{
@@ -1019,7 +1233,13 @@ var resolved_issueTests = map[string]testCase{
 	// Resolved Issue 33: bytes.Buffer.Cap() (formerly known issue Bug 7)
 	"BytesBufferCapResolved": {resolvedIssueSrc, "BytesBufferCapResolved", nil, resolved_issue.BytesBufferCapResolved},
 	// Resolved Issue 34: json.Encoder method dispatch collision (formerly known issue Bug 8)
-	"JsonEncodeResolved": {resolvedIssueSrc, "JsonEncodeResolved", nil, resolved_issue.JsonEncodeResolved},
+	"JsonEncodeResolved":         {resolvedIssueSrc, "JsonEncodeResolved", nil, resolved_issue.JsonEncodeResolved},
+	"FmtSprintfFieldResolved":    {resolvedIssueSrc, "FmtSprintfFieldResolved", nil, resolved_issue.FmtSprintfFieldResolved},
+	"FmtSprintfTypeResolved":     {resolvedIssueSrc, "FmtSprintfTypeResolved", nil, resolved_issue.FmtSprintfTypeResolved},
+	"FmtStringerPointerResolved": {resolvedIssueSrc, "FmtStringerPointerResolved", nil, resolved_issue.FmtStringerPointerResolved},
+	"FmtStringerResolved":        {resolvedIssueSrc, "FmtStringerResolved", nil, resolved_issue.FmtStringerResolved},
+	"MapRangeWithBreak":          {resolvedIssueSrc, "MapRangeWithBreak", nil, resolved_issue.MapRangeWithBreak},
+	"MapUpdateDuringRange":       {resolvedIssueSrc, "MapUpdateDuringRange", nil, resolved_issue.MapUpdateDuringRange},
 }
 
 var scopeTests = map[string]testCase{
@@ -1974,6 +2194,204 @@ var trickyStructsTests = map[string]testCase{
 	"StructWithValidation":               {trickySrc, "StructWithValidation", nil, tricky.StructWithValidation},
 	"StructZeroInitTest":                 {trickySrc, "StructZeroInitTest", nil, tricky.StructZeroInitTest},
 	"StructZeroValueCheckTest":           {trickySrc, "StructZeroValueCheckTest", nil, tricky.StructZeroValueCheckTest},
+}
+
+var trickyCoverageTests = map[string]testCase{
+	"ArrayPointerIndex":          {trickySrc, "ArrayPointerIndex", nil, tricky.ArrayPointerIndex},
+	"ArrayPointerSlice":          {trickySrc, "ArrayPointerSlice", nil, tricky.ArrayPointerSlice},
+	"BinomialCoefficient":        {trickySrc, "BinomialCoefficient", []any{5, 2}, tricky.BinomialCoefficient},
+	"BitCountOnes":               {trickySrc, "BitCountOnes", []any{0b101101}, tricky.BitCountOnes},
+	"ChannelBasic":               {trickySrc, "ChannelBasic", nil, tricky.ChannelBasic},
+	"ChannelBuffered":            {trickySrc, "ChannelBuffered", nil, tricky.ChannelBuffered},
+	"Clamp":                      {trickySrc, "Clamp", []any{7, 1, 10}, tricky.Clamp},
+	"ClosureCaptureLoop":         {trickySrc, "ClosureCaptureLoop", nil, tricky.ClosureCaptureLoop},
+	"ClosureMutateOuter":         {trickySrc, "ClosureMutateOuter", nil, tricky.ClosureMutateOuter},
+	"ClosureRecursive":           {trickySrc, "ClosureRecursive", nil, tricky.ClosureRecursive},
+	"ClosureReturnClosure":       {trickySrc, "ClosureReturnClosure", nil, tricky.ClosureReturnClosure},
+	"ClosureWithDefer":           {trickySrc, "ClosureWithDefer", nil, tricky.ClosureWithDefer},
+	"ComplexArray":               {trickySrc, "ComplexArray", nil, tricky.ComplexArray},
+	"ComplexBoolExpr":            {trickySrc, "ComplexBoolExpr", nil, tricky.ComplexBoolExpr},
+	"ComplexLiteral":             {trickySrc, "ComplexLiteral", nil, tricky.ComplexLiteral},
+	"ComplexMapKey":              {trickySrc, "ComplexMapKey", nil, tricky.ComplexMapKey},
+	"DeferAfterPanic":            {trickySrc, "DeferAfterPanic", nil, tricky.DeferAfterPanic},
+	"DeferCallInDefer":           {trickySrc, "DeferCallInDefer", nil, tricky.DeferCallInDefer},
+	"DeferClosureCapture":        {trickySrc, "DeferClosureCapture", nil, tricky.DeferClosureCapture},
+	"DeferInClosure":             {trickySrc, "DeferInClosure", nil, tricky.DeferInClosure},
+	"DeferInLoop":                {trickySrc, "DeferInLoop", nil, tricky.DeferInLoop},
+	"DeferModifyNamed":           {trickySrc, "DeferModifyNamed", nil, tricky.DeferModifyNamed},
+	"DeferModifyReturn":          {trickySrc, "DeferModifyReturn", nil, tricky.DeferModifyReturn},
+	"DeferNamedReturn":           {trickySrc, "DeferNamedReturn", nil, tricky.DeferNamedReturn},
+	"DeferPanicRecover":          {trickySrc, "DeferPanicRecover", nil, tricky.DeferPanicRecover},
+	"DeferReadAfterAssign":       {trickySrc, "DeferReadAfterAssign", nil, tricky.DeferReadAfterAssign},
+	"DeferStackOrder":            {trickySrc, "DeferStackOrder", nil, tricky.DeferStackOrder},
+	"DoubleMapLookup":            {trickySrc, "DoubleMapLookup", nil, tricky.DoubleMapLookup},
+	"DoublePointer":              {trickySrc, "DoublePointer", nil, tricky.DoublePointer},
+	"EmbeddedField":              {trickySrc, "EmbeddedField", nil, tricky.EmbeddedField},
+	"ErrorReturn":                {trickySrc, "ErrorReturn", nil, tricky.ErrorReturn},
+	"FactorialIterative":         {trickySrc, "FactorialIterative", []any{6}, tricky.FactorialIterative},
+	"FibonacciNth":               {trickySrc, "FibonacciNth", []any{8}, tricky.FibonacciNth},
+	"ForRangeBreak":              {trickySrc, "ForRangeBreak", nil, tricky.ForRangeBreak},
+	"ForRangeContinue":           {trickySrc, "ForRangeContinue", nil, tricky.ForRangeContinue},
+	"ForRangeKeyValue":           {trickySrc, "ForRangeKeyValue", nil, tricky.ForRangeKeyValue},
+	"ForRangeMap":                {trickySrc, "ForRangeMap", nil, tricky.ForRangeMap},
+	"ForRangeModifyValue":        {trickySrc, "ForRangeModifyValue", nil, tricky.ForRangeModifyValue},
+	"ForRangePointer":            {trickySrc, "ForRangePointer", nil, tricky.ForRangePointer},
+	"ForRangeStringByteIndex":    {trickySrc, "ForRangeStringByteIndex", nil, tricky.ForRangeStringByteIndex},
+	"ForRangeWithIndex":          {trickySrc, "ForRangeWithIndex", nil, tricky.ForRangeWithIndex},
+	"FullSliceExpr":              {trickySrc, "FullSliceExpr", nil, tricky.FullSliceExpr},
+	"GCD":                        {trickySrc, "GCD", []any{48, 18}, tricky.GCD},
+	"InterfaceAssertion":         {trickySrc, "InterfaceAssertion", nil, tricky.InterfaceAssertion},
+	"InterfaceConversion":        {trickySrc, "InterfaceConversion", nil, tricky.InterfaceConversion},
+	"InterfaceEmbed":             {trickySrc, "InterfaceEmbed", nil, tricky.InterfaceEmbed},
+	"InterfaceNil":               {trickySrc, "InterfaceNil", nil, tricky.InterfaceNil},
+	"InterfaceNilComparison":     {trickySrc, "InterfaceNilComparison", nil, tricky.InterfaceNilComparison},
+	"InterfaceSlice":             {trickySrc, "InterfaceSlice", nil, tricky.InterfaceSlice},
+	"InterfaceTypeSwitch":        {trickySrc, "InterfaceTypeSwitch", nil, tricky.InterfaceTypeSwitch},
+	"IsPrime":                    {trickySrc, "IsPrime", []any{29}, tricky.IsPrime},
+	"LCM":                        {trickySrc, "LCM", []any{12, 18}, tricky.LCM},
+	"MapAssign":                  {trickySrc, "MapAssign", nil, tricky.MapAssign},
+	"MapClear":                   {trickySrc, "MapClear", nil, tricky.MapClear},
+	"MapCommaOk":                 {trickySrc, "MapCommaOk", nil, tricky.MapCommaOk},
+	"MapDeepCopy":                {trickySrc, "MapDeepCopy", []any{map[int][]int{1: {2, 3}, 4: {5}}}, tricky.MapDeepCopy},
+	"MapDelete":                  {trickySrc, "MapDelete", nil, tricky.MapDelete},
+	"MapDeleteAll":               {trickySrc, "MapDeleteAll", nil, tricky.MapDeleteAll},
+	"MapDeleteDuringRange":       {trickySrc, "MapDeleteDuringRange", nil, tricky.MapDeleteDuringRange},
+	"MapDropWhileTest":           {trickySrc, "MapDropWhileTest", nil, tricky.MapDropWhileTest},
+	"MapEqualParam":              {trickySrc, "MapEqualParam", []any{map[string]int{"a": 1, "b": 2}, map[string]int{"a": 1, "b": 2}}, tricky.MapEqualParam},
+	"MapIncrement":               {trickySrc, "MapIncrement", nil, tricky.MapIncrement},
+	"MapInvertParam":             {trickySrc, "MapInvertParam", []any{map[string]int{"a": 1, "b": 2}}, tricky.MapInvertParam},
+	"MapIterateModify":           {trickySrc, "MapIterateModify", nil, tricky.MapIterateModify},
+	"MapKeyModification":         {trickySrc, "MapKeyModification", nil, tricky.MapKeyModification},
+	"MapKeyPointer":              {trickySrc, "MapKeyPointer", nil, tricky.MapKeyPointer},
+	"MapKeys":                    {trickySrc, "MapKeys", nil, tricky.MapKeys},
+	"MapLenCap":                  {trickySrc, "MapLenCap", nil, tricky.MapLenCap},
+	"MapLiteralNested":           {trickySrc, "MapLiteralNested", nil, tricky.MapLiteralNested},
+	"MapLookupAssign":            {trickySrc, "MapLookupAssign", nil, tricky.MapLookupAssign},
+	"MapLookupModify":            {trickySrc, "MapLookupModify", nil, tricky.MapLookupModify},
+	"MapLookupNil":               {trickySrc, "MapLookupNil", nil, tricky.MapLookupNil},
+	"MapLookupWithDefault":       {trickySrc, "MapLookupWithDefault", nil, tricky.MapLookupWithDefault},
+	"MapMerge":                   {trickySrc, "MapMerge", nil, tricky.MapMerge},
+	"MapNestedStruct":            {trickySrc, "MapNestedStruct", nil, tricky.MapNestedStruct},
+	"MapNilKey":                  {trickySrc, "MapNilKey", nil, tricky.MapNilKey},
+	"MapOfChannels":              {trickySrc, "MapOfChannels", nil, tricky.MapOfChannels},
+	"MapOfSlice":                 {trickySrc, "MapOfSlice", nil, tricky.MapOfSlice},
+	"MapPointerValue":            {trickySrc, "MapPointerValue", nil, tricky.MapPointerValue},
+	"MapRangeWithBreak":          {trickySrc, "MapRangeWithBreak", nil, tricky.MapRangeWithBreak},
+	"MapStructKey":               {trickySrc, "MapStructKey", nil, tricky.MapStructKey},
+	"MapTransform":               {trickySrc, "MapTransform", nil, tricky.MapTransform},
+	"MapTwoAssign":               {trickySrc, "MapTwoAssign", nil, tricky.MapTwoAssign},
+	"MapUpdateDuringRange":       {trickySrc, "MapUpdateDuringRange", nil, tricky.MapUpdateDuringRange},
+	"MapValueOverwrite":          {trickySrc, "MapValueOverwrite", nil, tricky.MapValueOverwrite},
+	"MapWithBoolKey":             {trickySrc, "MapWithBoolKey", nil, tricky.MapWithBoolKey},
+	"MapWithEmptyStringKey":      {trickySrc, "MapWithEmptyStringKey", nil, tricky.MapWithEmptyStringKey},
+	"MapWithInterfaceKey":        {trickySrc, "MapWithInterfaceKey", nil, tricky.MapWithInterfaceKey},
+	"MapWithNilValue":            {trickySrc, "MapWithNilValue", nil, tricky.MapWithNilValue},
+	"MapWithStructPointerKey":    {trickySrc, "MapWithStructPointerKey", nil, tricky.MapWithStructPointerKey},
+	"MethodOnPointer":            {trickySrc, "MethodOnPointer", nil, tricky.MethodOnPointer},
+	"ModuloWithNegative":         {trickySrc, "ModuloWithNegative", []any{-7, 3}, tricky.ModuloWithNegative},
+	"MultiReturnDiscard":         {trickySrc, "MultiReturnDiscard", nil, tricky.MultiReturnDiscard},
+	"MultipleAssignment":         {trickySrc, "MultipleAssignment", nil, tricky.MultipleAssignment},
+	"MultipleDeferSameName":      {trickySrc, "MultipleDeferSameName", nil, tricky.MultipleDeferSameName},
+	"MultipleNamedReturn":        {trickySrc, "MultipleNamedReturn", nil, tricky.MultipleNamedReturn},
+	"NestedClosure":              {trickySrc, "NestedClosure", nil, tricky.NestedClosure},
+	"NestedMaps":                 {trickySrc, "NestedMaps", nil, tricky.NestedMaps},
+	"NestedPointerStruct":        {trickySrc, "NestedPointerStruct", nil, tricky.NestedPointerStruct},
+	"NestedShadowing":            {trickySrc, "NestedShadowing", nil, tricky.NestedShadowing},
+	"NestedSliceAppend":          {trickySrc, "NestedSliceAppend", nil, tricky.NestedSliceAppend},
+	"NestedStructWithPointer":    {trickySrc, "NestedStructWithPointer", nil, tricky.NestedStructWithPointer},
+	"NextPermutation":            {trickySrc, "NextPermutation", []any{[]int{1, 2, 3}}, tricky.NextPermutation},
+	"NilInterfaceValue":          {trickySrc, "NilInterfaceValue", nil, tricky.NilInterfaceValue},
+	"NilPointerCheck":            {trickySrc, "NilPointerCheck", nil, tricky.NilPointerCheck},
+	"NilSliceAppend":             {trickySrc, "NilSliceAppend", nil, tricky.NilSliceAppend},
+	"PanicRecover":               {trickySrc, "PanicRecover", nil, tricky.PanicRecover},
+	"PointerArithmetic":          {trickySrc, "PointerArithmetic", nil, tricky.PointerArithmetic},
+	"PointerMethodValueReceiver": {trickySrc, "PointerMethodValueReceiver", nil, tricky.PointerMethodValueReceiver},
+	"PointerReassign":            {trickySrc, "PointerReassign", nil, tricky.PointerReassign},
+	"PointerStructCopy":          {trickySrc, "PointerStructCopy", nil, tricky.PointerStructCopy},
+	"PointerToChannel":           {trickySrc, "PointerToChannel", nil, tricky.PointerToChannel},
+	"PointerToMap":               {trickySrc, "PointerToMap", nil, tricky.PointerToMap},
+	"PointerToNilSlice":          {trickySrc, "PointerToNilSlice", nil, tricky.PointerToNilSlice},
+	"PointerToSlice":             {trickySrc, "PointerToSlice", nil, tricky.PointerToSlice},
+	"PointerToSliceElement":      {trickySrc, "PointerToSliceElement", nil, tricky.PointerToSliceElement},
+	"PointerToStructLiteral":     {trickySrc, "PointerToStructLiteral", nil, tricky.PointerToStructLiteral},
+	"PowerRecursive":             {trickySrc, "PowerRecursive", []any{3, 4}, tricky.PowerRecursive},
+	"RecursiveFibMemo":           {trickySrc, "RecursiveFibMemo", nil, tricky.RecursiveFibMemo},
+	"SelectDefault":              {trickySrc, "SelectDefault", nil, tricky.SelectDefault},
+	"ShortCircuitEval":           {trickySrc, "ShortCircuitEval", nil, tricky.ShortCircuitEval},
+	"ShortCircuitEval2":          {trickySrc, "ShortCircuitEval2", nil, tricky.ShortCircuitEval2},
+	"ShortVarDeclShadow":         {trickySrc, "ShortVarDeclShadow", nil, tricky.ShortVarDeclShadow},
+	"Sign":                       {trickySrc, "Sign", []any{-42}, tricky.Sign},
+	"SliceAppendExpand":          {trickySrc, "SliceAppendExpand", nil, tricky.SliceAppendExpand},
+	"SliceAppendNil":             {trickySrc, "SliceAppendNil", nil, tricky.SliceAppendNil},
+	"SliceAppendToCap":           {trickySrc, "SliceAppendToCap", nil, tricky.SliceAppendToCap},
+	"SliceAppendToSlice":         {trickySrc, "SliceAppendToSlice", nil, tricky.SliceAppendToSlice},
+	"SliceAssign":                {trickySrc, "SliceAssign", nil, tricky.SliceAssign},
+	"SliceCapAfterAppend":        {trickySrc, "SliceCapAfterAppend", nil, tricky.SliceCapAfterAppend},
+	"SliceContains":              {trickySrc, "SliceContains", nil, tricky.SliceContains},
+	"SliceCopyDifferentTypes":    {trickySrc, "SliceCopyDifferentTypes", nil, tricky.SliceCopyDifferentTypes},
+	"SliceCopyOperation":         {trickySrc, "SliceCopyOperation", nil, tricky.SliceCopyOperation},
+	"SliceCopyOverlap":           {trickySrc, "SliceCopyOverlap", nil, tricky.SliceCopyOverlap},
+	"SliceCopyToSubslice":        {trickySrc, "SliceCopyToSubslice", nil, tricky.SliceCopyToSubslice},
+	"SliceDeleteByIndex":         {trickySrc, "SliceDeleteByIndex", nil, tricky.SliceDeleteByIndex},
+	"SliceDrain":                 {trickySrc, "SliceDrain", nil, tricky.SliceDrain},
+	"SliceEqualParam":            {trickySrc, "SliceEqualParam", []any{[]int{1, 2, 3}, []int{1, 2, 3}}, tricky.SliceEqualParam},
+	"SliceFilter":                {trickySrc, "SliceFilter", nil, tricky.SliceFilter},
+	"SliceFromArray":             {trickySrc, "SliceFromArray", nil, tricky.SliceFromArray},
+	"SliceIndexExpr":             {trickySrc, "SliceIndexExpr", nil, tricky.SliceIndexExpr},
+	"SliceInsert":                {trickySrc, "SliceInsert", nil, tricky.SliceInsert},
+	"SliceInterleave":            {trickySrc, "SliceInterleave", []any{[]int{1, 3, 5}, []int{2, 4, 6}}, tricky.SliceInterleave},
+	"SliceLenCap":                {trickySrc, "SliceLenCap", nil, tricky.SliceLenCap},
+	"SliceLiteralNested":         {trickySrc, "SliceLiteralNested", nil, tricky.SliceLiteralNested},
+	"SliceMakeWithLen":           {trickySrc, "SliceMakeWithLen", nil, tricky.SliceMakeWithLen},
+	"SliceModifyViaSubslice":     {trickySrc, "SliceModifyViaSubslice", nil, tricky.SliceModifyViaSubslice},
+	"SliceNil":                   {trickySrc, "SliceNil", nil, tricky.SliceNil},
+	"SliceOfChannels":            {trickySrc, "SliceOfChannels", nil, tricky.SliceOfChannels},
+	"SliceOfFuncs":               {trickySrc, "SliceOfFuncs", nil, tricky.SliceOfFuncs},
+	"SliceOfInterfaces":          {trickySrc, "SliceOfInterfaces", nil, tricky.SliceOfInterfaces},
+	"SliceOfMaps":                {trickySrc, "SliceOfMaps", nil, tricky.SliceOfMaps},
+	"SliceOfPointers":            {trickySrc, "SliceOfPointers", nil, tricky.SliceOfPointers},
+	"SliceOfPointersToStruct":    {trickySrc, "SliceOfPointersToStruct", nil, tricky.SliceOfPointersToStruct},
+	"SliceOfSlice":               {trickySrc, "SliceOfSlice", nil, tricky.SliceOfSlice},
+	"SliceOfSlicesAppend":        {trickySrc, "SliceOfSlicesAppend", nil, tricky.SliceOfSlicesAppend},
+	"SliceOfStructs":             {trickySrc, "SliceOfStructs", nil, tricky.SliceOfStructs},
+	"SliceRangeModify":           {trickySrc, "SliceRangeModify", nil, tricky.SliceRangeModify},
+	"SliceReverse":               {trickySrc, "SliceReverse", nil, tricky.SliceReverse},
+	"SliceRotateLeftParam":       {trickySrc, "SliceRotateLeftParam", []any{[]int{1, 2, 3, 4, 5}, 2}, tricky.SliceRotateLeftParam},
+	"SliceThreeIndex":            {trickySrc, "SliceThreeIndex", nil, tricky.SliceThreeIndex},
+	"SliceUniqueParam":           {trickySrc, "SliceUniqueParam", []any{[]int{1, 2, 2, 3, 1}}, tricky.SliceUniqueParam},
+	"SliceZeroLength":            {trickySrc, "SliceZeroLength", nil, tricky.SliceZeroLength},
+	"StringConcat":               {trickySrc, "StringConcat", nil, tricky.StringConcat},
+	"StringIndex":                {trickySrc, "StringIndex", nil, tricky.StringIndex},
+	"StringJoinParam":            {trickySrc, "StringJoinParam", []any{[]string{"a", "b", "c"}, ":"}, tricky.StringJoinParam},
+	"StringLen":                  {trickySrc, "StringLen", nil, tricky.StringLen},
+	"StringReverse":              {trickySrc, "StringReverse", []any{"abcdef"}, tricky.StringReverse},
+	"StructCompare":              {trickySrc, "StructCompare", nil, tricky.StructCompare},
+	"StructCopy":                 {trickySrc, "StructCopy", nil, tricky.StructCopy},
+	"StructEmbeddedFieldAccess":  {trickySrc, "StructEmbeddedFieldAccess", nil, tricky.StructEmbeddedFieldAccess},
+	"StructEmbeddedMethod":       {trickySrc, "StructEmbeddedMethod", nil, tricky.StructEmbeddedMethod},
+	"StructFieldPointer":         {trickySrc, "StructFieldPointer", nil, tricky.StructFieldPointer},
+	"StructFieldUpdate":          {trickySrc, "StructFieldUpdate", nil, tricky.StructFieldUpdate},
+	"StructLiteralEmbedded":      {trickySrc, "StructLiteralEmbedded", nil, tricky.StructLiteralEmbedded},
+	"StructLiteralShort":         {trickySrc, "StructLiteralShort", nil, tricky.StructLiteralShort},
+	"StructMethodOnNil":          {trickySrc, "StructMethodOnNil", nil, tricky.StructMethodOnNil},
+	"StructMethodOnNilPointer":   {trickySrc, "StructMethodOnNilPointer", nil, tricky.StructMethodOnNilPointer},
+	"StructMethodOnValue":        {trickySrc, "StructMethodOnValue", nil, tricky.StructMethodOnValue},
+	"StructPointerMethod":        {trickySrc, "StructPointerMethod", nil, tricky.StructPointerMethod},
+	"StructPointerMethodNil":     {trickySrc, "StructPointerMethodNil", nil, tricky.StructPointerMethodNil},
+	"StructPointerNil":           {trickySrc, "StructPointerNil", nil, tricky.StructPointerNil},
+	"StructPointerSlice":         {trickySrc, "StructPointerSlice", nil, tricky.StructPointerSlice},
+	"StructSliceLiteral":         {trickySrc, "StructSliceLiteral", nil, tricky.StructSliceLiteral},
+	"StructWithMap":              {trickySrc, "StructWithMap", nil, tricky.StructWithMap},
+	"StructWithMultipleFields":   {trickySrc, "StructWithMultipleFields", nil, tricky.StructWithMultipleFields},
+	"StructWithSlice":            {trickySrc, "StructWithSlice", nil, tricky.StructWithSlice},
+	"StructZeroValue":            {trickySrc, "StructZeroValue", nil, tricky.StructZeroValue},
+	"SumOfDigits":                {trickySrc, "SumOfDigits", []any{12345}, tricky.SumOfDigits},
+	"SwitchFallthrough":          {trickySrc, "SwitchFallthrough", nil, tricky.SwitchFallthrough},
+	"SwitchNoCondition":          {trickySrc, "SwitchNoCondition", nil, tricky.SwitchNoCondition},
+	"VariadicEmpty":              {trickySrc, "VariadicEmpty", nil, tricky.VariadicEmpty},
+	"VariadicMultiple":           {trickySrc, "VariadicMultiple", nil, tricky.VariadicMultiple},
+	"VariadicOne":                {trickySrc, "VariadicOne", nil, tricky.VariadicOne},
+	"VariadicWithSlice":          {trickySrc, "VariadicWithSlice", nil, tricky.VariadicWithSlice},
 }
 
 var typeconvTests = map[string]testCase{

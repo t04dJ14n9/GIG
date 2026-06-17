@@ -13,6 +13,7 @@ import (
 	"github.com/t04dJ14n9/gig"
 	_ "github.com/t04dJ14n9/gig/stdlib/packages"
 	thirdparty "github.com/t04dJ14n9/gig/tests/testdata/thirdparty"
+	thirdparty_ext "github.com/t04dJ14n9/gig/tests/testdata/thirdparty_ext"
 )
 
 // Embed each category source file for interpreter testing.
@@ -66,6 +67,18 @@ var (
 	srcText string
 	//go:embed testdata/thirdparty/simple_time.go
 	srcSimpleTime string
+	//go:embed testdata/thirdparty_ext/channels.go
+	srcThirdpartyExtChannels string
+	//go:embed testdata/thirdparty_ext/closures_defer_types.go
+	srcThirdpartyExtClosuresDeferTypes string
+	//go:embed testdata/thirdparty_ext/io_complex.go
+	srcThirdpartyExtIOComplex string
+	//go:embed testdata/thirdparty_ext/json_complex.go
+	srcThirdpartyExtJSONComplex string
+	//go:embed testdata/thirdparty_ext/math_regexp_sort.go
+	srcThirdpartyExtMathRegexpSort string
+	//go:embed testdata/thirdparty_ext/time_context_sync.go
+	srcThirdpartyExtTimeContextSync string
 	//go:embed testdata/pass_struct_src/pass_bytes_buffer_write_and_read.go
 	srcPassBytesBufferWriteAndRead string
 	//go:embed testdata/pass_struct_src/pass_bytes_buffer_len.go
@@ -394,6 +407,9 @@ var patternsTests = map[string]testCase{
 	"InterfaceWithPointerReceiver": {srcPatterns, "InterfaceWithPointerReceiver", nil, thirdparty.InterfaceWithPointerReceiver},
 	"InterfaceSliceOfPointers":     {srcPatterns, "InterfaceSliceOfPointers", nil, thirdparty.InterfaceSliceOfPointers},
 	"InterfaceMap":                 {srcPatterns, "InterfaceMap", nil, thirdparty.InterfaceMap},
+	"GenericContainerOps":          {srcPatterns, "GenericContainerOps", nil, thirdparty.GenericContainerOps},
+	"ReadWithInterface":            {srcPatterns, "ReadWithInterface", nil, thirdparty.ReadWithInterface},
+	"WriteWithInterface":           {srcPatterns, "WriteWithInterface", nil, thirdparty.WriteWithInterface},
 	"VariadicAppend":               {srcPatterns, "VariadicAppend", nil, thirdparty.VariadicAppend},
 	"VariadicStringsJoin":          {srcPatterns, "VariadicStringsJoin", nil, thirdparty.VariadicStringsJoin},
 	"VariadicAppendSlice":          {srcPatterns, "VariadicAppendSlice", nil, thirdparty.VariadicAppendSlice},
@@ -465,6 +481,9 @@ var cryptoTests = map[string]testCase{
 	"CryptoSHA256Write":               {srcCrypto, "CryptoSHA256Write", nil, thirdparty.CryptoSHA256Write},
 	"CryptoSHA512Sum":                 {srcCrypto, "CryptoSHA512Sum", nil, thirdparty.CryptoSHA512Sum},
 	"CryptoSHA512_256":                {srcCrypto, "CryptoSHA512_256", nil, thirdparty.CryptoSHA512_256},
+	"CryptoHMAC_SHA256":               {srcCrypto, "CryptoHMAC_SHA256", nil, thirdparty.CryptoHMAC_SHA256},
+	"CryptoHMACEqual":                 {srcCrypto, "CryptoHMACEqual", nil, thirdparty.CryptoHMACEqual},
+	"CryptoHMACDifferent":             {srcCrypto, "CryptoHMACDifferent", nil, thirdparty.CryptoHMACDifferent},
 	"CryptoAESEncrypt":                {srcCrypto, "CryptoAESEncrypt", nil, thirdparty.CryptoAESEncrypt},
 	"CryptoAESCBC":                    {srcCrypto, "CryptoAESCBC", nil, thirdparty.CryptoAESCBC},
 	"CryptoAESOFB":                    {srcCrypto, "CryptoAESOFB", nil, thirdparty.CryptoAESOFB},
@@ -500,6 +519,8 @@ var mimeTests = map[string]testCase{
 	"MimeWordEncoder":         {srcMime, "MimeWordEncoder", nil, thirdparty.MimeWordEncoder},
 	"MimeWordDecoder":         {srcMime, "MimeWordDecoder", nil, thirdparty.MimeWordDecoder},
 	"MultipartFormData":       {srcMime, "MultipartFormData", nil, thirdparty.MultipartFormData},
+	"MultipartNewReader":      {srcMime, "MultipartNewReader", nil, thirdparty.MultipartNewReader},
+	"MultipartCreate":         {srcMime, "MultipartCreate", nil, thirdparty.MultipartCreate},
 }
 
 var textTests = map[string]testCase{
@@ -516,6 +537,69 @@ var simpleTimeTests = map[string]testCase{
 	"SimpleTimeSub":      {srcSimpleTime, "SimpleTimeSub", nil, 24},
 	"SimpleTimeAdd":      {srcSimpleTime, "SimpleTimeAdd", nil, 2},
 	"SimpleContextValue": {srcSimpleTime, "SimpleContextValue", nil, 1},
+}
+
+var thirdpartyExtChannelsTests = map[string]testCase{
+	"ChannelWithStructElement":    {srcThirdpartyExtChannels, "ChannelWithStructElement", nil, thirdparty_ext.ChannelWithStructElement},
+	"ChannelWithInterfaceElement": {srcThirdpartyExtChannels, "ChannelWithInterfaceElement", nil, thirdparty_ext.ChannelWithInterfaceElement},
+	"ChannelWithMapElement":       {srcThirdpartyExtChannels, "ChannelWithMapElement", nil, thirdparty_ext.ChannelWithMapElement},
+	"ChannelWithSliceElement":     {srcThirdpartyExtChannels, "ChannelWithSliceElement", nil, thirdparty_ext.ChannelWithSliceElement},
+	"ChannelWithFuncElement":      {srcThirdpartyExtChannels, "ChannelWithFuncElement", nil, thirdparty_ext.ChannelWithFuncElement},
+	"SelectDefaultAlways":         {srcThirdpartyExtChannels, "SelectDefaultAlways", nil, thirdparty_ext.SelectDefaultAlways},
+	"SelectNonBlockingSend":       {srcThirdpartyExtChannels, "SelectNonBlockingSend", nil, thirdparty_ext.SelectNonBlockingSend},
+	"SelectMultipleChannels":      {srcThirdpartyExtChannels, "SelectMultipleChannels", nil, thirdparty_ext.SelectMultipleChannels},
+}
+
+var thirdpartyExtClosuresDeferTypesTests = map[string]testCase{
+	"ClosureWithDeferAndPanicRecovery": {srcThirdpartyExtClosuresDeferTypes, "ClosureWithDeferAndPanicRecovery", nil, thirdparty_ext.ClosureWithDeferAndPanicRecovery},
+	"ClosureCapturingExternalVar":      {srcThirdpartyExtClosuresDeferTypes, "ClosureCapturingExternalVar", nil, thirdparty_ext.ClosureCapturingExternalVar},
+	"MultipleDefersWithExternalCalls":  {srcThirdpartyExtClosuresDeferTypes, "MultipleDefersWithExternalCalls", nil, thirdparty_ext.MultipleDefersWithExternalCalls},
+	"TypeSwitchWithExternalTypes":      {srcThirdpartyExtClosuresDeferTypes, "TypeSwitchWithExternalTypes", nil, thirdparty_ext.TypeSwitchWithExternalTypes},
+	"TypeSwitchWithMultipleExternalTypes": {srcThirdpartyExtClosuresDeferTypes, "TypeSwitchWithMultipleExternalTypes", nil,
+		thirdparty_ext.TypeSwitchWithMultipleExternalTypes},
+	"ChainOnInterface": {srcThirdpartyExtClosuresDeferTypes, "ChainOnInterface", nil, thirdparty_ext.ChainOnInterface},
+}
+
+var thirdpartyExtIOComplexTests = map[string]testCase{
+	"BufferedReader":          {srcThirdpartyExtIOComplex, "BufferedReader", nil, thirdparty_ext.BufferedReader},
+	"BufferedWriter":          {srcThirdpartyExtIOComplex, "BufferedWriter", nil, thirdparty_ext.BufferedWriter},
+	"MultiWriter":             {srcThirdpartyExtIOComplex, "MultiWriter", nil, thirdparty_ext.MultiWriter},
+	"TeeReaderWrapper":        {srcThirdpartyExtIOComplex, "TeeReaderWrapper", nil, thirdparty_ext.TeeReaderWrapper},
+	"BytesBufferAsReadWriter": {srcThirdpartyExtIOComplex, "BytesBufferAsReadWriter", nil, thirdparty_ext.BytesBufferAsReadWriter},
+	"InterfaceValueNil":       {srcThirdpartyExtIOComplex, "InterfaceValueNil", nil, thirdparty_ext.InterfaceValueNil},
+}
+
+var thirdpartyExtJSONComplexTests = map[string]testCase{
+	"JsonWithNestedStruct": {srcThirdpartyExtJSONComplex, "JsonWithNestedStruct", nil, thirdparty_ext.JsonWithNestedStruct},
+	"JsonWithSliceField":   {srcThirdpartyExtJSONComplex, "JsonWithSliceField", nil, thirdparty_ext.JsonWithSliceField},
+	"JsonWithMapField":     {srcThirdpartyExtJSONComplex, "JsonWithMapField", nil, thirdparty_ext.JsonWithMapField},
+	"JsonUnmarshalToInterface": {srcThirdpartyExtJSONComplex, "JsonUnmarshalToInterface", nil,
+		thirdparty_ext.JsonUnmarshalToInterface},
+	"JsonStreamDecoder": {srcThirdpartyExtJSONComplex, "JsonStreamDecoder", nil, thirdparty_ext.JsonStreamDecoder},
+}
+
+var thirdpartyExtMathRegexpSortTests = map[string]testCase{
+	"MathHypot":             {srcThirdpartyExtMathRegexpSort, "MathHypot", nil, thirdparty_ext.MathHypot},
+	"MathAtan2":             {srcThirdpartyExtMathRegexpSort, "MathAtan2", nil, thirdparty_ext.MathAtan2},
+	"MathModf":              {srcThirdpartyExtMathRegexpSort, "MathModf", nil, thirdparty_ext.MathModf},
+	"MathIsNaNCheck":        {srcThirdpartyExtMathRegexpSort, "MathIsNaNCheck", nil, thirdparty_ext.MathIsNaNCheck},
+	"MathIsInfCheck":        {srcThirdpartyExtMathRegexpSort, "MathIsInfCheck", nil, thirdparty_ext.MathIsInfCheck},
+	"RegexpLongestMatch":    {srcThirdpartyExtMathRegexpSort, "RegexpLongestMatch", nil, thirdparty_ext.RegexpLongestMatch},
+	"RegexpFindAllSubmatch": {srcThirdpartyExtMathRegexpSort, "RegexpFindAllSubmatch", nil, thirdparty_ext.RegexpFindAllSubmatch},
+	"RegexpReplaceAllFunc":  {srcThirdpartyExtMathRegexpSort, "RegexpReplaceAllFunc", nil, thirdparty_ext.RegexpReplaceAllFunc},
+	"SortWithFunc":          {srcThirdpartyExtMathRegexpSort, "SortWithFunc", nil, thirdparty_ext.SortWithFunc},
+	"SortStablePreservingOrder": {srcThirdpartyExtMathRegexpSort, "SortStablePreservingOrder", nil,
+		thirdparty_ext.SortStablePreservingOrder},
+	"SortFloat64sWithNaN": {srcThirdpartyExtMathRegexpSort, "SortFloat64sWithNaN", nil, thirdparty_ext.SortFloat64sWithNaN},
+}
+
+var thirdpartyExtTimeContextSyncTests = map[string]testCase{
+	"TimeDurationParse": {srcThirdpartyExtTimeContextSync, "TimeDurationParse", nil, thirdparty_ext.TimeDurationParse},
+	"TimeUnixNano":      {srcThirdpartyExtTimeContextSync, "TimeUnixNano", nil, thirdparty_ext.TimeUnixNano},
+	"ContextWithCancelAndValue": {srcThirdpartyExtTimeContextSync, "ContextWithCancelAndValue", nil,
+		thirdparty_ext.ContextWithCancelAndValue},
+	"ContextNestedValues": {srcThirdpartyExtTimeContextSync, "ContextNestedValues", nil, thirdparty_ext.ContextNestedValues},
+	"SyncPool":            {srcThirdpartyExtTimeContextSync, "SyncPool", nil, thirdparty_ext.SyncPool},
 }
 
 // passStructTestCase describes a host-to-interpreter struct passing test.
@@ -544,26 +628,32 @@ var passStructTests = map[string]passStructTestCase{
 }
 
 var thirdpartyTestSets = map[string]testSet{
-	"Bytes":     {src: srcBytes, tests: bytesTests},
-	"Strings":   {src: srcStrings, tests: stringsTests},
-	"Strconv":   {src: srcStrconv, tests: strconvTests},
-	"Math":      {src: srcMath, tests: mathTests},
-	"Time":      {src: srcTime, tests: timeTests},
-	"Context":   {src: srcContext, tests: contextTests},
-	"Sync":      {src: srcSync, tests: syncTests},
-	"Sort":      {src: srcSort, tests: sortTests},
-	"Encoding":  {src: srcEncoding, tests: encodingTests},
-	"IO":        {src: srcIO, tests: ioTests},
-	"Regexp":    {src: srcRegexp, tests: regexpTests},
-	"errors":    {src: srcErrors, tests: errorsTests},
-	"Fmt":       {src: srcFmt, tests: fmtTests},
-	"Patterns":  {src: srcPatterns, tests: patternsTests},
-	"Hash":      {src: srcHash, tests: hashTests},
-	"Compress":  {src: srcCompress, tests: compressTests},
-	"Container": {src: srcContainer, tests: containerTests},
-	"MathBig":   {src: srcMathBig, tests: mathBigTests},
-	"Crypto":    {src: srcCrypto, tests: cryptoTests},
-	"NetURL":    {src: srcNetURL, tests: netURLTests},
-	"Mime":      {src: srcMime, tests: mimeTests},
-	"Text":      {src: srcText, tests: textTests},
+	"Bytes":                           {src: srcBytes, tests: bytesTests},
+	"Strings":                         {src: srcStrings, tests: stringsTests},
+	"Strconv":                         {src: srcStrconv, tests: strconvTests},
+	"Math":                            {src: srcMath, tests: mathTests},
+	"Time":                            {src: srcTime, tests: timeTests},
+	"Context":                         {src: srcContext, tests: contextTests},
+	"Sync":                            {src: srcSync, tests: syncTests},
+	"Sort":                            {src: srcSort, tests: sortTests},
+	"Encoding":                        {src: srcEncoding, tests: encodingTests},
+	"IO":                              {src: srcIO, tests: ioTests},
+	"Regexp":                          {src: srcRegexp, tests: regexpTests},
+	"errors":                          {src: srcErrors, tests: errorsTests},
+	"Fmt":                             {src: srcFmt, tests: fmtTests},
+	"Patterns":                        {src: srcPatterns, tests: patternsTests},
+	"Hash":                            {src: srcHash, tests: hashTests},
+	"Compress":                        {src: srcCompress, tests: compressTests},
+	"Container":                       {src: srcContainer, tests: containerTests},
+	"MathBig":                         {src: srcMathBig, tests: mathBigTests},
+	"Crypto":                          {src: srcCrypto, tests: cryptoTests},
+	"NetURL":                          {src: srcNetURL, tests: netURLTests},
+	"Mime":                            {src: srcMime, tests: mimeTests},
+	"Text":                            {src: srcText, tests: textTests},
+	"ThirdpartyExtChannels":           {src: srcThirdpartyExtChannels, tests: thirdpartyExtChannelsTests},
+	"ThirdpartyExtClosuresDeferTypes": {src: srcThirdpartyExtClosuresDeferTypes, tests: thirdpartyExtClosuresDeferTypesTests, buildOpts: []gig.BuildOption{gig.WithAllowPanic()}},
+	"ThirdpartyExtIOComplex":          {src: srcThirdpartyExtIOComplex, tests: thirdpartyExtIOComplexTests},
+	"ThirdpartyExtJSONComplex":        {src: srcThirdpartyExtJSONComplex, tests: thirdpartyExtJSONComplexTests},
+	"ThirdpartyExtMathRegexpSort":     {src: srcThirdpartyExtMathRegexpSort, tests: thirdpartyExtMathRegexpSortTests},
+	"ThirdpartyExtTimeContextSync":    {src: srcThirdpartyExtTimeContextSync, tests: thirdpartyExtTimeContextSyncTests},
 }

@@ -71,6 +71,31 @@ func F() int {
 	}
 }
 
+func TestRunDumpReadsRawSource(t *testing.T) {
+	const src = `package main
+
+type Point struct {
+	x, y int
+}
+
+func Compute() int {
+	p := Point{x: 1, y: 2}
+	return p.x * p.y
+}
+`
+	output, err := captureStdout(func() error {
+		return RunDump(flag.NewFlagSet("dump", flag.ContinueOnError), []string{"--raw", src})
+	})
+	if err != nil {
+		t.Fatalf("RunDump raw error: %v", err)
+	}
+	for _, part := range []string{"# Member Compute", "func Compute() int", "Point", "return"} {
+		if !strings.Contains(output, part) {
+			t.Fatalf("raw dump output missing %q\n%s", part, output)
+		}
+	}
+}
+
 func captureStdout(fn func() error) (string, error) {
 	oldStdout := os.Stdout
 	reader, writer, err := os.Pipe()

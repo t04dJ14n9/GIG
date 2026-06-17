@@ -103,6 +103,21 @@ func F() int { return 1 }`
 	}
 }
 
+func TestBuilder_HonoursExplicitPackageDeclarationAfterLeadingComment(t *testing.T) {
+	const src = `// Package custom is a test package.
+package custom
+
+func F() int { return 1 }`
+	b := NewBuilder()
+	unit, err := b.Build(context.Background(), Source{Content: src}, stubEnv{}, Config{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if unit.Package().Pkg.Name() != "custom" {
+		t.Fatalf("expected package custom, got %q", unit.Package().Pkg.Name())
+	}
+}
+
 // --- banned imports ---------------------------------------------------------
 
 func TestBuilder_RejectsUnsafeImport(t *testing.T) {

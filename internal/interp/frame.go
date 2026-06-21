@@ -317,8 +317,7 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 		return nil, fmt.Errorf("interp: function %s has no body", fn.Name())
 	}
 
-	fr, pool := p.acquireFrame(fn, freeVars)
-	defer p.releaseFrame(pool, fr)
+	fr := p.newFrame(fn, freeVars)
 	fr.ctx = ctx
 	fr.cancelTicks = 0
 

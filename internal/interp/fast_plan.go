@@ -5,7 +5,6 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
-	"sync"
 
 	"golang.org/x/tools/go/ssa"
 
@@ -385,91 +384,4 @@ func (fr *frame) setFastBoolSlot(slot int, b bool) {
 
 func (fr *frame) readFastBoolSlot(slot int) bool {
 	return fr.slots[slot].fastBool
-}
-
-var (
-	framePoolEligibility sync.Map // map[*ssa.Function]bool
-	framePools           sync.Map // map[*ssa.Function]*sync.Pool
-)
-
-func (p *program) acquireFrame(fn *ssa.Function, freeVars []*Cell) (*frame, *sync.Pool) {
-	if !cachedFramePoolEligible(fn) {
-		return p.newFrame(fn, freeVars), nil
-	}
-	pool := p.framePoolFor(fn)
-	fr := pool.Get().(*frame)
-	fr.fn = fn
-	fr.block = fn.Blocks[0]
-	fr.prevBlock = nil
-	fr.freeVars = freeVars
-	return fr, pool
-}
-
-func cachedFramePoolEligible(fn *ssa.Function) bool {
-	if cached, ok := framePoolEligibility.Load(fn); ok {
-		return cached.(bool)
-	}
-	eligible := framePoolEligible(fn)
-	framePoolEligibility.Store(fn, eligible)
-	return eligible
-}
-
-func (p *program) framePoolFor(fn *ssa.Function) *sync.Pool {
-	actual, _ := framePools.LoadOrStore(fn, &sync.Pool{
-		New: func() any {
-			return p.newFrame(fn, nil)
-		},
-	})
-	return actual.(*sync.Pool)
-}
-
-func framePoolEligible(fn *ssa.Function) bool {
-	if fn == nil || len(fn.Blocks) == 0 || len(fn.Locals) != 0 {
-		return false
-	}
-	sawDirectSelfCall := false
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			switch x := instr.(type) {
-			case *ssa.Alloc, *ssa.MakeClosure, *ssa.Defer, *ssa.RunDefers, *ssa.Panic, *ssa.Go, *ssa.Select, *ssa.Send:
-				return false
-			case *ssa.Call:
-				if x.Common().Value == fn {
-					sawDirectSelfCall = true
-				}
-			}
-		}
-	}
-	return len(fn.FreeVars) > 0 || sawDirectSelfCall
-}
-
-func (p *program) releaseFrame(pool *sync.Pool, fr *frame) {
-	if pool == nil || fr == nil {
-		return
-	}
-	for i := range fr.slots {
-		fr.slots[i] = Cell{}
-	}
-	for k := range fr.cells {
-		delete(fr.cells, k)
-	}
-	for k := range fr.addrRefs {
-		delete(fr.addrRefs, k)
-	}
-	for k := range fr.iters {
-		delete(fr.iters, k)
-	}
-	for i := range fr.defers {
-		fr.defers[i] = nil
-	}
-	fr.fn = nil
-	fr.ctx = nil
-	fr.block = nil
-	fr.prevBlock = nil
-	fr.freeVars = nil
-	fr.defers = nil
-	fr.panicking = false
-	fr.panicVal = nil
-	fr.cancelTicks = 0
-	pool.Put(fr)
 }

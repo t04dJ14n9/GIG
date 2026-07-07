@@ -23,6 +23,8 @@ func main() {
 
 	// Example 4: Multi-function program
 	multiFunctionExample()
+
+	extendedExample()
 }
 
 func simpleExample() {
@@ -155,4 +157,32 @@ func Compute() int {
 		panic(err)
 	}
 	fmt.Printf("add(10, 20) + multiply(3, 4) = %v\n\n", result)
+}
+
+func extendedExample() {
+	source := `
+package main
+
+type Point struct{
+	x, y int
+}
+func Compute() int {
+	p := Point{
+		x: 1,
+		y: 2,
+	}
+	
+	return p.x * p.y
+}
+`
+	prog, err := gig.Build(source)
+	if err != nil {
+		panic(err)
+	}
+
+	result, err := prog.Run("Compute")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Sum of point is %d", result)
 }

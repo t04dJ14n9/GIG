@@ -12,6 +12,7 @@ import (
 
 	"github.com/t04dJ14n9/gig"
 	_ "github.com/t04dJ14n9/gig/stdlib/packages"
+	githublibs "github.com/t04dJ14n9/gig/tests/testdata/githublibs"
 	thirdparty "github.com/t04dJ14n9/gig/tests/testdata/thirdparty"
 	thirdparty_ext "github.com/t04dJ14n9/gig/tests/testdata/thirdparty_ext"
 )
@@ -65,6 +66,8 @@ var (
 	srcMime string
 	//go:embed testdata/thirdparty/text.go
 	srcText string
+	//go:embed testdata/githublibs/main.go
+	srcGithubLibs string
 	//go:embed testdata/thirdparty/simple_time.go
 	srcSimpleTime string
 	//go:embed testdata/thirdparty_ext/channels.go
@@ -531,6 +534,27 @@ var textTests = map[string]testCase{
 	"TextTabwriterInit":   {srcText, "TextTabwriterInit", nil, thirdparty.TextTabwriterInit},
 }
 
+var githubLibsTests = map[string]testCase{
+	"GJSONNestedName": {srcGithubLibs, "GJSONNestedName",
+		[]any{`{"user":{"profile":{"name":"Ada"}}}`}, githublibs.GJSONNestedName},
+	"GJSONManyValues": {srcGithubLibs, "GJSONManyValues",
+		[]any{`{"name":"Ada","age":37,"active":true}`}, githublibs.GJSONManyValues},
+	"GJSONScoresTotal": {srcGithubLibs, "GJSONScoresTotal",
+		[]any{`{"items":[{"score":7},{"score":8},{"score":9}]}`}, githublibs.GJSONScoresTotal},
+	"GJSONParseExists": {srcGithubLibs, "GJSONParseExists",
+		[]any{`{"meta":{"trace":"abc"}}`}, githublibs.GJSONParseExists},
+	"CastToIntSliceTotal":   {srcGithubLibs, "CastToIntSliceTotal", nil, githublibs.CastToIntSliceTotal},
+	"CastToStringSliceJoin": {srcGithubLibs, "CastToStringSliceJoin", nil, githublibs.CastToStringSliceJoin},
+	"CastMapConversions":    {srcGithubLibs, "CastMapConversions", nil, githublibs.CastMapConversions},
+	"CastBoolAndString":     {srcGithubLibs, "CastBoolAndString", nil, githublibs.CastBoolAndString},
+	"UUIDParseString": {srcGithubLibs, "UUIDParseString",
+		[]any{"f47ac10b-58cc-4372-a567-0e02b2c3d479"}, githublibs.UUIDParseString},
+	"UUIDParseVersion": {srcGithubLibs, "UUIDParseVersion",
+		[]any{"f47ac10b-58cc-4372-a567-0e02b2c3d479"}, githublibs.UUIDParseVersion},
+	"UUIDURN": {srcGithubLibs, "UUIDURN",
+		[]any{"f47ac10b-58cc-4372-a567-0e02b2c3d479"}, githublibs.UUIDURN},
+}
+
 // simpleTimeTests uses hardcoded expected values (not native comparison)
 // since the source is embedded and called via prog.Run.
 var simpleTimeTests = map[string]testCase{
@@ -650,6 +674,7 @@ var thirdpartyTestSets = map[string]testSet{
 	"NetURL":                          {src: srcNetURL, tests: netURLTests},
 	"Mime":                            {src: srcMime, tests: mimeTests},
 	"Text":                            {src: srcText, tests: textTests},
+	"GitHubLibraries":                 {src: srcGithubLibs, tests: githubLibsTests},
 	"ThirdpartyExtChannels":           {src: srcThirdpartyExtChannels, tests: thirdpartyExtChannelsTests},
 	"ThirdpartyExtClosuresDeferTypes": {src: srcThirdpartyExtClosuresDeferTypes, tests: thirdpartyExtClosuresDeferTypesTests, buildOpts: []gig.BuildOption{gig.WithAllowPanic()}},
 	"ThirdpartyExtIOComplex":          {src: srcThirdpartyExtIOComplex, tests: thirdpartyExtIOComplexTests},

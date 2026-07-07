@@ -30,6 +30,12 @@ Thumbs.db
 # Temporary files
 /tmp/
 
+# Local study/scratch UI (not part of the module)
+study_webui/
+
+# Generated test artifacts
+tests/stress_memory_leak.log
+
 .codebuddy
 
 reference

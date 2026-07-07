@@ -19,6 +19,7 @@ import (
 	"github.com/t04dJ14n9/gig/tests/testdata/arithmetic"
 	"github.com/t04dJ14n9/gig/tests/testdata/autowrap"
 	"github.com/t04dJ14n9/gig/tests/testdata/bitwise"
+	"github.com/t04dJ14n9/gig/tests/testdata/channel_pipeline"
 	"github.com/t04dJ14n9/gig/tests/testdata/channels"
 	"github.com/t04dJ14n9/gig/tests/testdata/closures"
 	"github.com/t04dJ14n9/gig/tests/testdata/closures_advanced"
@@ -39,6 +40,7 @@ import (
 	"github.com/t04dJ14n9/gig/tests/testdata/recursion"
 	"github.com/t04dJ14n9/gig/tests/testdata/resolved_issue"
 	"github.com/t04dJ14n9/gig/tests/testdata/scope"
+	"github.com/t04dJ14n9/gig/tests/testdata/select_timeout"
 	"github.com/t04dJ14n9/gig/tests/testdata/slices"
 	"github.com/t04dJ14n9/gig/tests/testdata/slicing"
 	"github.com/t04dJ14n9/gig/tests/testdata/strings_pkg"
@@ -69,11 +71,17 @@ func TestControlflow(t *testing.T) {
 func TestCornercases(t *testing.T) {
 	runTestSet(t, testSet{src: cornercasesSrc, tests: cornercasesTests})
 }
-func TestEdgecases(t *testing.T)  { runTestSet(t, testSet{src: edgecasesSrc, tests: edgecasesTests}) }
-func TestExternal(t *testing.T)   { runTestSet(t, testSet{src: externalSrc, tests: externalTests}) }
-func TestFunctions(t *testing.T)  { runTestSet(t, testSet{src: functionsSrc, tests: functionsTests}) }
-func TestGoroutine(t *testing.T)  { runTestSet(t, testSet{src: goroutineSrc, tests: goroutineTests}) }
-func TestChannels(t *testing.T)   { runTestSet(t, testSet{src: channelsSrc, tests: channelsTests}) }
+func TestEdgecases(t *testing.T) { runTestSet(t, testSet{src: edgecasesSrc, tests: edgecasesTests}) }
+func TestExternal(t *testing.T)  { runTestSet(t, testSet{src: externalSrc, tests: externalTests}) }
+func TestFunctions(t *testing.T) { runTestSet(t, testSet{src: functionsSrc, tests: functionsTests}) }
+func TestGoroutine(t *testing.T) { runTestSet(t, testSet{src: goroutineSrc, tests: goroutineTests}) }
+func TestChannels(t *testing.T)  { runTestSet(t, testSet{src: channelsSrc, tests: channelsTests}) }
+func TestChannelPipeline(t *testing.T) {
+	runTestSet(t, testSet{src: channelPipelineSrc, tests: channelPipelineTests})
+}
+func TestSelectTimeout(t *testing.T) {
+	runTestSet(t, testSet{src: selectTimeoutSrc, tests: selectTimeoutTests})
+}
 func TestInit(t *testing.T)       { runTestSet(t, testSet{src: initSrc, tests: initTests}) }
 func TestInitialize(t *testing.T) { runTestSet(t, testSet{src: initializeSrc, tests: initializeTests}) }
 func TestLeetcodeHard(t *testing.T) {
@@ -459,6 +467,12 @@ var goroutineSrc string
 //go:embed testdata/channels/main.go
 var channelsSrc string
 
+//go:embed testdata/channel_pipeline/main.go
+var channelPipelineSrc string
+
+//go:embed testdata/select_timeout/main.go
+var selectTimeoutSrc string
+
 //go:embed testdata/initialize/main.go
 var initializeSrc string
 
@@ -503,6 +517,12 @@ var structsSrc string
 
 //go:embed testdata/switch/main.go
 var switchSrc string
+
+//go:embed testdata/concurrent_stateful/main.go
+var concurrentStatefulSrc string
+
+//go:embed testdata/cornercases_src/main.go
+var cornercasesSrcSrc string
 
 //go:embed testdata/tricky/main.go
 var trickySrc string
@@ -1037,6 +1057,20 @@ var channelsTests = map[string]testCase{
 	"ChannelBufferedsize":     {channelsSrc, "ChannelBufferedsize", nil, channels.ChannelBufferedsize},
 }
 
+var channelPipelineTests = map[string]testCase{
+	"SumSquares": {channelPipelineSrc, "SumSquares", nil, channel_pipeline.SumSquares},
+}
+
+var selectTimeoutTests = map[string]testCase{
+	"SelectReceivesReadyData": {selectTimeoutSrc, "SelectReceivesReadyData", nil, select_timeout.SelectReceivesReadyData},
+	"SelectTimesOutWhenNoData": {
+		selectTimeoutSrc,
+		"SelectTimesOutWhenNoData",
+		nil,
+		select_timeout.SelectTimesOutWhenNoData,
+	},
+}
+
 var initTests = map[string]testCase{
 	"GetA":                {initSrc, "GetA", nil, initialize.GetA},
 	"GetB":                {initSrc, "GetB", nil, initialize.GetB},
@@ -1240,6 +1274,13 @@ var resolved_issueTests = map[string]testCase{
 	"FmtStringerResolved":        {resolvedIssueSrc, "FmtStringerResolved", nil, resolved_issue.FmtStringerResolved},
 	"MapRangeWithBreak":          {resolvedIssueSrc, "MapRangeWithBreak", nil, resolved_issue.MapRangeWithBreak},
 	"MapUpdateDuringRange":       {resolvedIssueSrc, "MapUpdateDuringRange", nil, resolved_issue.MapUpdateDuringRange},
+	// Resolved Issue 36-41: historical strange syntax regressions.
+	"NilSliceInterfaceResolved":        {resolvedIssueSrc, "NilSliceInterfaceResolved", nil, resolved_issue.NilSliceInterfaceResolved},
+	"NilMapAccessResolved":             {resolvedIssueSrc, "NilMapAccessResolved", nil, resolved_issue.NilMapAccessResolved},
+	"NilMapDeleteResolved":             {resolvedIssueSrc, "NilMapDeleteResolved", nil, resolved_issue.NilMapDeleteResolved},
+	"BlankExpressionInterfaceResolved": {resolvedIssueSrc, "BlankExpressionInterfaceResolved", nil, resolved_issue.BlankExpressionInterfaceResolved},
+	"ClosedChannelSendRecoverResolved": {resolvedIssueSrc, "ClosedChannelSendRecoverResolved", nil, resolved_issue.ClosedChannelSendRecoverResolved},
+	"NilFuncReturnResolved":            {resolvedIssueSrc, "NilFuncReturnResolved", nil, resolved_issue.NilFuncReturnResolved},
 }
 
 var scopeTests = map[string]testCase{

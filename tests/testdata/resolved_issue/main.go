@@ -583,3 +583,50 @@ func JsonEncodeResolved() int {
 	encoder.Encode(map[string]int{"y": 20})
 	return buf.Len()
 }
+
+// ── Resolved Issue 36-41: historical strange syntax regressions ─────────────
+
+// NilSliceInterfaceResolved preserves nil slice type information in interface{}.
+func NilSliceInterfaceResolved() interface{} {
+	var s []int
+	return s
+}
+
+// NilMapAccessResolved returns the value type zero value for nil map access.
+func NilMapAccessResolved() int {
+	var m map[string]int
+	return m["key"]
+}
+
+// NilMapDeleteResolved treats delete on a nil map as a no-op.
+func NilMapDeleteResolved() int {
+	var m map[string]int
+	delete(m, "key")
+	return 0
+}
+
+// BlankExpressionInterfaceResolved preserves interface return type information.
+func BlankExpressionInterfaceResolved() interface{} {
+	_ = 42
+	var s []interface{}
+	return s
+}
+
+// ClosedChannelSendRecoverResolved recovers from sending on a closed channel.
+func ClosedChannelSendRecoverResolved() int {
+	ch := make(chan int, 1)
+	close(ch)
+	defer func() {
+		recover()
+	}()
+	ch <- 1
+	return 0
+}
+
+// NilFuncReturnResolved preserves typed nil function returns.
+func NilFuncReturnResolved() func() int {
+	if false {
+		return func() int { return 1 }
+	}
+	return nil
+}

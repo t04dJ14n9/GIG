@@ -110,10 +110,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run Gosec Security Scanner
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.x"
+          cache: true
+          cache-dependency-path: cmd/gig/go.sum
+
+      - name: Run Gosec Security Scanner (root)
         uses: securego/gosec@v2.27.1
         with:
           # G115 conflicts with Go's defined narrowing conversion semantics,
           # which the interpreter must preserve. Non-production fixtures,
           # benchmarks, examples, and the legacy reference tree are excluded.
+          # The nested CLI module is scanned separately below.
           args: -exclude=G115 -exclude-generated -exclude-dir=stdlib/packages -exclude-dir=examples -exclude-dir=benchmarks -exclude-dir=tests -exclude-dir=reference -exclude-dir=gentool -exclude-dir=cmd/gig ./...
+
+      - name: Run Gosec Security Scanner (CLI)
+        working-directory: cmd/gig
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -exclude=G115 -exclude-generated -exclude-dir=gentool ./...

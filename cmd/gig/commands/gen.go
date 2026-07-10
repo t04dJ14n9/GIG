@@ -51,6 +51,7 @@ func RunGen(fs *flag.FlagSet, args []string) error {
 	fmt.Printf("  packages: %d\n\n", len(importPaths))
 
 	packagesDir := filepath.Join(pkgDir, "packages")
+	// #nosec G301 -- Generated Go package directories must be readable by build users.
 	if err := os.MkdirAll(packagesDir, 0o755); err != nil {
 		return fmt.Errorf("creating packages directory: %w", err)
 	}

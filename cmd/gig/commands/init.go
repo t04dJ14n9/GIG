@@ -39,6 +39,7 @@ func RunInit(fs *flag.FlagSet, args []string) error {
 		return fmt.Errorf("%q is not a valid Go package name", packageName)
 	}
 
+	// #nosec G301 -- Generated Go package directories must be readable by build users.
 	if err := os.MkdirAll(packageName, 0o755); err != nil {
 		return fmt.Errorf("creating directory: %w", err)
 	}
@@ -49,6 +50,7 @@ func RunInit(fs *flag.FlagSet, args []string) error {
 	}
 
 	pkgsPath := filepath.Join(packageName, "pkgs.go")
+	// #nosec G306 -- Generated Go source uses standard permissions and respects umask.
 	if err := os.WriteFile(pkgsPath, pkgsGo, 0o666); err != nil {
 		return fmt.Errorf("writing pkgs.go: %w", err)
 	}

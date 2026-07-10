@@ -282,7 +282,10 @@ Expected: every command passes with no race report.
 
 - [ ] **Step 2: Run lint, security, workflow, module, and build gates**
 
-Run root and CLI GolangCI-Lint v2.4.0, Gosec v2.27.1 with the workflow's production scope, Govulncheck, Actionlint, module tidiness checks, and Linux/Windows cross-builds exactly as specified in the production-readiness plan and `.github/workflows/go.yml`.
+Run root and CLI GolangCI-Lint v2.4.0, root and CLI Gosec v2.27.1 with
+the workflow's production scopes, root and CLI Govulncheck, Actionlint, module
+tidiness checks, and Linux/Windows cross-builds exactly as specified in the
+production-readiness plan and `.github/workflows/go.yml`.
 
 Expected: every command exits 0 with no actionable finding.
 

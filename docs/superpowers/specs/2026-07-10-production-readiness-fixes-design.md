@@ -139,12 +139,14 @@ dependencies, build, and run race-enabled tests from `cmd/gig`.
   and the CLI module.
 - Pin Gosec to v2.27.1 rather than a moving `master` branch.
 - Remove Gosec's `-no-fail` option so a real finding fails CI.
-- Exclude non-production fixtures, benchmarks, examples, and the legacy
-  reference tree from the hard gate.
+- Scan the root and nested CLI modules separately. Exclude non-production
+  fixtures, benchmarks, examples, and the legacy reference tree from the root
+  hard gate.
 - Exclude G115 centrally because Gig must implement Go's defined narrowing and
   wrapping conversions; changing those conversions would break language
-  compatibility. Keep localized, explained `#nosec` annotations for explicit
-  CLI file selection and compatibility-only legacy crypto registration.
+  compatibility. Keep localized, explained `#nosec` annotations for
+  user-selected file paths, standard generated-source permissions, and
+  compatibility-only legacy crypto registration.
 - Keep generated-code exclusions because generated registration wrappers are
   reviewed through their generator and module build tests.
 

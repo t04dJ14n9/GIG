@@ -263,6 +263,9 @@ git commit -m "fix: bound plugin commands and align cli version"
 **Files:**
 - Delete: `study_ast/main.go`
 - Modify: `.github/workflows/go.yml`
+- Modify: `cmd/gig/commands/dump.go`
+- Modify: `cmd/gig/commands/gen.go`
+- Modify: `cmd/gig/commands/init.go`
 
 **Interfaces:**
 - Consumes: root and CLI Go modules and the GitHub `Go` workflow.
@@ -284,7 +287,10 @@ Keep GolangCI-Lint v2.4.0. Add a second `golangci/golangci-lint-action@v9` invoc
 
 - [ ] **Step 4: Pin and enforce Gosec**
 
-Use `securego/gosec@v2.27.1` and remove `-no-fail`, preserving generated-code and directory exclusions.
+Use `securego/gosec@v2.27.1` and remove `-no-fail`, preserving generated-code
+and non-production directory exclusions. Scan the nested CLI module in a
+separate step. Keep its deliberate source-path and generated-permission
+operations readable with localized, explained `#nosec` annotations.
 
 - [ ] **Step 5: Run local workflow equivalents**
 
@@ -297,6 +303,7 @@ GOTOOLCHAIN=go1.23.1 go test -race -count=1 ./...
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0 run --timeout=5m ./...
 (cd cmd/gig && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0 run --timeout=5m ./...)
 go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -exclude=G115 -exclude-generated -exclude-dir=stdlib/packages -exclude-dir=examples -exclude-dir=benchmarks -exclude-dir=tests -exclude-dir=reference -exclude-dir=gentool -exclude-dir=cmd/gig ./...
+(cd cmd/gig && go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -exclude=G115 -exclude-generated -exclude-dir=gentool ./...)
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```
 
@@ -305,7 +312,7 @@ Expected: every command exits 0 using the same GolangCI-Lint version as CI.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add .github/workflows/go.yml
+git add .github/workflows/go.yml cmd/gig/commands/dump.go cmd/gig/commands/gen.go cmd/gig/commands/init.go
 git commit -m "ci: enforce production readiness gates"
 ```
 

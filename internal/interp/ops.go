@@ -441,7 +441,7 @@ func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) (con
 	return contNext, nil, nil
 }
 
-func (p *program) runCall(_ *frame, fr *frame, instr *ssa.Call, depth int) (continuation, []value.Value, error) {
+func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) (continuation, []value.Value, error) {
 	common := instr.Common()
 	// Interface method invocation: x.M(...) where x: I (interface).
 	// SSA models this with Common.IsInvoke()==true; Common.Method names
@@ -478,7 +478,7 @@ func (p *program) runCall(_ *frame, fr *frame, instr *ssa.Call, depth int) (cont
 	}
 	// Built-ins (len, cap, append, ...) come through as *ssa.Builtin.
 	if b, ok := common.Value.(*ssa.Builtin); ok {
-		out, err := p.callBuiltin(fr, b, common.Args)
+		out, err := p.callBuiltin(caller, fr, b, common.Args)
 		if err != nil {
 			return contNext, nil, err
 		}
@@ -632,7 +632,7 @@ func (p *program) packResults(t types.Type, results []value.Value) (value.Value,
 // append, copy, delete, print, println, panic, recover, real, imag,
 // complex). It returns a single Value or an error; callers store the
 // result in the SSA-instruction cell.
-func (p *program) callBuiltin(fr *frame, b *ssa.Builtin, ssaArgs []ssa.Value) (value.Value, error) {
+func (p *program) callBuiltin(caller *frame, fr *frame, b *ssa.Builtin, ssaArgs []ssa.Value) (value.Value, error) {
 	args := make([]value.Value, len(ssaArgs))
 	for i, a := range ssaArgs {
 		v, err := p.readValue(fr, a)
@@ -735,12 +735,17 @@ func (p *program) callBuiltin(fr *frame, b *ssa.Builtin, ssaArgs []ssa.Value) (v
 	case "recover":
 		// recover() consumes panic state from the deferring frame.
 		// In a directly-deferred function the deferring frame and the
-		// running frame are the same; in a deferred closure they
-		// differ, so we consult program.panicFrame which is set during
-		// the unwind.
-		target := p.panicFrame
-		if target == nil && fr.panicking {
+		// running frame are the same (fr is panicking). In a deferred
+		// closure they differ: the closure runs in its own frame whose
+		// caller is the panicking frame, so we consult caller. Using the
+		// threaded caller (rather than shared program state) keeps this
+		// per-goroutine — concurrent interpreted goroutines that panic
+		// must not observe each other's panic frame.
+		var target *frame
+		if fr.panicking {
 			target = fr
+		} else if caller != nil && caller.panicking {
+			target = caller
 		}
 		if target != nil && target.panicking {
 			v := target.panicVal

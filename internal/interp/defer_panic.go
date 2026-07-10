@@ -128,7 +128,17 @@ func (p *program) runDeferRec(fr *frame, rec *deferRecord) error {
 		_, err := p.callBuiltinDirect(fr, rec.builtin, rec.args)
 		return err
 	}
-	// Function-value: convert via reflect.Call.
+	// Function-value. If it wraps an interpreted body, dispatch through
+	// callSSA with fr as the caller so a recover() inside the deferred
+	// closure can find the panicking frame via the threaded caller. Going
+	// through reflect.Call would re-enter with a nil caller and lose that
+	// link. Genuinely-external func values still take the reflect path.
+	if fn, ok := rec.fn.Func(); ok {
+		if ifn, ok := fn.(*interpretedFunc); ok && len(ifn.fn.Blocks) > 0 {
+			_, err := p.callSSA(fr.ctx, fr, ifn.fn, rec.args, ifn.freeVars, 0)
+			return err
+		}
+	}
 	rv, err := p.reflectOf(rec.fn, nil)
 	if err != nil {
 		return err

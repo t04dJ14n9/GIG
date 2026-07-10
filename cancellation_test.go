@@ -32,26 +32,21 @@ func ReadyReceive() int {
 }
 `
 
-type guardedRunResult struct {
-	value any
-	err   error
-}
-
-func runWithGuard(t *testing.T, prog *Program, ctx context.Context, name string) (any, error) {
+func runWithGuard(t *testing.T, prog *Program, ctx context.Context, name string) error {
 	t.Helper()
 
-	done := make(chan guardedRunResult, 1)
+	done := make(chan error, 1)
 	go func() {
-		value, err := prog.RunWithContext(ctx, name)
-		done <- guardedRunResult{value: value, err: err}
+		_, err := prog.RunWithContext(ctx, name)
+		done <- err
 	}()
 
 	select {
-	case result := <-done:
-		return result.value, result.err
+	case err := <-done:
+		return err
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("%s remained blocked after context cancellation", name)
-		return nil, nil
+		return errors.New("unreachable after test failure")
 	}
 }
 
@@ -71,7 +66,7 @@ func assertDeadlineExceeded(t *testing.T, prog *Program, name string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 
-	_, err := runWithGuard(t, prog, ctx, name)
+	err := runWithGuard(t, prog, ctx, name)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("%s error = %v, want context.DeadlineExceeded", name, err)
 	}

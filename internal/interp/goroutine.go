@@ -215,19 +215,19 @@ func sendWithContext(ctx context.Context, channel, send reflect.Value) error {
 
 func recvWithContext(ctx context.Context, channel reflect.Value) (reflect.Value, bool, error) {
 	if ctx == nil || ctx.Done() == nil {
-		value, ok := channel.Recv()
-		return value, ok, nil
+		received, ok := channel.Recv()
+		return received, ok, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return reflect.Value{}, false, err
 	}
 
-	chosen, value, ok := reflect.Select([]reflect.SelectCase{
+	chosen, received, ok := reflect.Select([]reflect.SelectCase{
 		{Dir: reflect.SelectRecv, Chan: channel},
 		{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())},
 	})
 	if chosen == 1 {
 		return reflect.Value{}, false, ctx.Err()
 	}
-	return value, ok, nil
+	return received, ok, nil
 }

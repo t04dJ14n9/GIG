@@ -81,7 +81,12 @@ func parsePkgsGo(path string) ([]string, string, error) {
 	}
 
 	// Use go/parser to extract the package name reliably
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.PackageClauseOnly)
+	file, err := parser.ParseFile(
+		token.NewFileSet(),
+		path,
+		nil,
+		parser.PackageClauseOnly|parser.SkipObjectResolution,
+	)
 	if err != nil {
 		return nil, "", fmt.Errorf("parsing package clause: %w", err)
 	}

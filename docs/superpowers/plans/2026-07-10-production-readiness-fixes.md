@@ -323,7 +323,63 @@ git add .github/workflows/go.yml cmd/gig/commands/dump.go cmd/gig/commands/gen.g
 git commit -m "ci: enforce production readiness gates"
 ```
 
-### Task 5: Full verification and GitHub delivery
+### Task 5: Skip deprecated parser object resolution
+
+**Files:**
+- Modify: `internal/frontend/builder.go`
+- Modify: `internal/frontend/builder_test.go`
+- Modify: `cmd/gig/gentool/generator.go`
+- Modify: `cmd/gig/commands/gen.go`
+
+**Interfaces:**
+- Consumes: production `parser.ParseFile` calls and `types.Info`-based semantic
+  resolution.
+- Produces: parser ASTs without deprecated `Object`, `Scope`, or `Unresolved`
+  data while preserving frontend, generation, and package-name behavior.
+
+- [ ] **Step 1: Write the failing frontend policy test**
+
+Add `TestParseSourceFileSkipsDeprecatedObjectResolution` to
+`internal/frontend/builder_test.go`. Parse a source file containing a package
+variable and a function reference through a wished-for `parseSourceFile`
+helper, then require `file.Scope == nil`, `file.Unresolved == nil`, and every
+`*ast.Ident.Obj == nil`.
+
+- [ ] **Step 2: Verify RED**
+
+```bash
+go test -count=1 -run '^TestParseSourceFileSkipsDeprecatedObjectResolution$' ./internal/frontend
+```
+
+Expected: FAIL because `parseSourceFile` does not exist.
+
+- [ ] **Step 3: Implement the parser policy**
+
+Add `parseSourceFile` in `internal/frontend/builder.go` with mode
+`parser.AllErrors | parser.ParseComments | parser.SkipObjectResolution` and
+route `defaultBuilder.Build` through it. Add `parser.SkipObjectResolution` to
+the package-clause probe in the same file, `gentool.ParsePkgsFile`, and
+`commands.parsePkgsGo`.
+
+- [ ] **Step 4: Verify GREEN on both supported toolchain boundaries**
+
+```bash
+go test -race -count=1 ./internal/frontend
+GOTOOLCHAIN=go1.23.1 go test -race -count=1 ./internal/frontend
+(cd cmd/gig && go test -race -count=1 ./commands ./gentool)
+(cd cmd/gig && GOTOOLCHAIN=go1.23.1 go test -race -count=1 ./commands ./gentool)
+```
+
+Expected: all commands PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/frontend/builder.go internal/frontend/builder_test.go cmd/gig/gentool/generator.go cmd/gig/commands/gen.go docs/superpowers
+git commit -m "perf: skip deprecated parser object resolution"
+```
+
+### Task 6: Full verification and GitHub delivery
 
 **Files:**
 - Review: every file changed from `main`

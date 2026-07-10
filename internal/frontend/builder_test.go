@@ -2,6 +2,8 @@ package frontend
 
 import (
 	"context"
+	"go/ast"
+	"go/token"
 	"go/types"
 	"reflect"
 	"strings"
@@ -54,6 +56,34 @@ func (s stubEnvWithAutoImport) AutoImport(name string) (host.Import, bool) {
 var _ value.Value
 
 // --- success cases ----------------------------------------------------------
+
+func TestParseSourceFileSkipsDeprecatedObjectResolution(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parseSourceFile(fset, "main.go", `package main
+
+var answer = 42
+
+func ReadAnswer() int {
+	return answer
+}
+`)
+	if err != nil {
+		t.Fatalf("parseSourceFile: %v", err)
+	}
+	if file.Scope != nil {
+		t.Fatal("File.Scope is populated; deprecated parser object resolution was not skipped")
+	}
+	if file.Unresolved != nil {
+		t.Fatalf("File.Unresolved = %v; want nil", file.Unresolved)
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if ok && ident.Obj != nil {
+			t.Errorf("identifier %q has deprecated Obj resolution", ident.Name)
+		}
+		return true
+	})
+}
 
 func TestBuilder_BuildsSimpleProgram(t *testing.T) {
 	const src = `

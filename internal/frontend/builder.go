@@ -61,7 +61,7 @@ func (defaultBuilder) Build(ctx context.Context, src Source, env host.Environmen
 	}
 
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filename, source, parser.AllErrors|parser.ParseComments)
+	file, err := parseSourceFile(fset, filename, source)
 	if err != nil {
 		return nil, fmt.Errorf("frontend: parse: %w", err)
 	}
@@ -161,6 +161,11 @@ func (e *BuildError) Error() string {
 
 // --- helpers ----------------------------------------------------------------
 
+func parseSourceFile(fset *token.FileSet, filename, source string) (*ast.File, error) {
+	const mode = parser.AllErrors | parser.ParseComments | parser.SkipObjectResolution
+	return parser.ParseFile(fset, filename, source, mode)
+}
+
 func wrapPackageMain(src string) string {
 	src = strings.TrimSpace(src)
 	if !hasPackageClause(src) {
@@ -173,7 +178,12 @@ func hasPackageClause(src string) bool {
 	if src == "" {
 		return false
 	}
-	file, err := parser.ParseFile(token.NewFileSet(), "", src, parser.PackageClauseOnly)
+	file, err := parser.ParseFile(
+		token.NewFileSet(),
+		"",
+		src,
+		parser.PackageClauseOnly|parser.SkipObjectResolution,
+	)
 	return err == nil && file != nil && file.Name != nil
 }
 

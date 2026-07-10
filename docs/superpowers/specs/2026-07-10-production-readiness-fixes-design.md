@@ -83,6 +83,19 @@ builtin target launched by `runGo` must not inherit the spawning frame as its
 Delete the entire `study_ast` directory. Do not include `.workbuddy` or other
 unrelated untracked files in commits or the pull request.
 
+### Parser object-resolution cleanup
+
+Use `parser.SkipObjectResolution` on every production `parser.ParseFile` call.
+Gig performs semantic resolution through `go/types` and `types.Info` and never
+reads the deprecated `ast.Ident.Obj`, `ast.File.Scope`, or
+`ast.File.Unresolved` fields. The frontend also injects imports after parsing,
+which would make parser-era object data stale.
+
+The flag is available at the Go 1.23.1 compatibility floor. Add a focused
+frontend test proving the deprecated fields remain nil, and retain existing
+current/minimum-toolchain tests for the package-clause and import-only CLI
+parsers.
+
 ## Readability and Lint Policy
 
 Readability is a release requirement, not a secondary concern.
@@ -191,6 +204,8 @@ increased to mask the defect.
 - The CLI uses Gig v1.7.7 and contains no interactive command, plugin manager,
   or terminal-line-editing dependency.
 - `study_ast` is absent.
+- Every production parse skips deprecated parser object resolution while
+  `go/types`-based semantic resolution remains passing.
 - Default root and CLI build/test commands pass.
 - Root and CLI lint pass without readability-reducing rewrites.
 - Gosec and Govulncheck report no actionable findings.

@@ -302,7 +302,10 @@ func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Val
 		if err != nil {
 			return contNext, nil, err
 		}
-		recv, ok := rv.Recv()
+		recv, ok, err := recvWithContext(fr.ctx, rv)
+		if err != nil {
+			return contNext, nil, err
+		}
 		if !ok {
 			recv = reflect.Zero(rv.Type().Elem())
 		}

@@ -99,7 +99,10 @@ func (p *Program) Run(funcName string, params ...any) (any, error) {
 	return p.run(ctx, funcName, params...)
 }
 
-// RunWithContext executes a function with the given context.
+// RunWithContext executes a function with the given context. Cancellation is
+// observed by interpreter-owned execution, including blocking channel
+// operations. Registered host functions must implement their own cancellation,
+// normally through an explicit context.Context argument.
 func (p *Program) RunWithContext(ctx context.Context, funcName string, params ...any) (any, error) {
 	return p.run(ctx, funcName, params...)
 }

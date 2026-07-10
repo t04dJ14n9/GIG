@@ -5,6 +5,7 @@
 package interp
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 
@@ -88,11 +89,19 @@ func (p *program) runSend(fr *frame, instr *ssa.Send) (continuation, []value.Val
 	if err != nil {
 		return contNext, nil, err
 	}
-	rv.Send(rx)
+	if err := sendWithContext(fr.ctx, rv, rx); err != nil {
+		return contNext, nil, err
+	}
 	return contNext, nil, nil
 }
 
 func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value.Value, error) {
+	if fr.ctx != nil {
+		if err := fr.ctx.Err(); err != nil {
+			return contNext, nil, err
+		}
+	}
+
 	cases := make([]reflect.SelectCase, 0, len(instr.States)+1)
 	if !instr.Blocking {
 		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectDefault})
@@ -136,7 +145,18 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 			})
 		}
 	}
+	cancelCase := -1
+	if instr.Blocking && fr.ctx != nil && fr.ctx.Done() != nil {
+		cancelCase = len(cases)
+		cases = append(cases, reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(fr.ctx.Done()),
+		})
+	}
 	chosen, recv, recvOK := reflect.Select(cases)
+	if chosen == cancelCase {
+		return contNext, nil, fr.ctx.Err()
+	}
 	if !instr.Blocking {
 		chosen-- // default has index -1 in SSA terms
 	}
@@ -172,4 +192,42 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 	}
 	fr.setCell(instr, reflectValue(holder))
 	return contNext, nil, nil
+}
+
+func sendWithContext(ctx context.Context, channel, send reflect.Value) error {
+	if ctx == nil || ctx.Done() == nil {
+		channel.Send(send)
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	chosen, _, _ := reflect.Select([]reflect.SelectCase{
+		{Dir: reflect.SelectSend, Chan: channel, Send: send},
+		{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())},
+	})
+	if chosen == 1 {
+		return ctx.Err()
+	}
+	return nil
+}
+
+func recvWithContext(ctx context.Context, channel reflect.Value) (reflect.Value, bool, error) {
+	if ctx == nil || ctx.Done() == nil {
+		value, ok := channel.Recv()
+		return value, ok, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return reflect.Value{}, false, err
+	}
+
+	chosen, value, ok := reflect.Select([]reflect.SelectCase{
+		{Dir: reflect.SelectRecv, Chan: channel},
+		{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())},
+	})
+	if chosen == 1 {
+		return reflect.Value{}, false, ctx.Err()
+	}
+	return value, ok, nil
 }

@@ -662,7 +662,7 @@ panic:` 开头的 error，确保嵌入方总是拿到干净的 error 返回。
 
 按任务：
 
-- **加一个标准库包** → `cli-guide.md`。`stdlib/packages/` 下的 wrapper
+- **加一个标准库包** → `cli-guide_CN.md`。`stdlib/packages/` 下的 wrapper
   是参照对象。
 - **加一个第三方包** → `examples/custom/main.go` 和
   `examples/custom/mydep/pkgs.go`。

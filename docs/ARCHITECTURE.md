@@ -622,8 +622,8 @@ Three properties of the generated code matter:
 3. The output is one file per import path under `<dir>/packages/`. The user
    blank-imports `<modPath>/packages` to trigger all `init()` registrations.
 
-`cmd/gig/main.go` also exposes `repl` and `init` subcommands described in
-`cli-guide.md`.
+`cmd/gig/main.go` exposes the `init`, `gen`, and `dump` subcommands described
+in `cli-guide.md`.
 
 ---
 

@@ -22,7 +22,8 @@ checks.
   regression test, and their root-cause document are part of this change.
 - `cmd/gig/go.mod` depends on Gig v1.7.6 even though v1.7.7 exists for both the
   root and CLI modules.
-- Plugin-manager `go` subprocesses use unbounded background contexts.
+- The CLI's interactive mode and its plugin loader are redundant product
+  surface; their complete removal is specified separately.
 - `study_ast` is an untracked experiment that breaks the repository-wide
   default test/vet gate and is not production code.
 
@@ -63,17 +64,15 @@ remote concurrency timeout and race-sensitive panic/recover behavior:
 The implementation must not overwrite or silently discard those existing
 changes.
 
-### CLI dependency and plugin commands
+### CLI version and interactive-mode removal
 
 - Update `cmd/gig/go.mod` from Gig v1.7.6 to v1.7.7 and refresh only the module
   metadata required by that version change.
-- Add `LoadPackageContext(context.Context, string)` to the plugin manager.
-- Keep `LoadPackage(string)` as the REPL-compatible entry point. It will create
-  a five-minute context and delegate to `LoadPackageContext`.
-- Thread the supplied context through package discovery, documentation,
-  dependency download, module preparation, plugin build, and Gig-root lookup.
-- When a subprocess exits because its context is canceled, return the context
-  error so callers can distinguish cancellation from an invalid package.
+- The later [CLI REPL removal design](2026-07-10-remove-cli-repl-design.md)
+  supersedes the plugin-command timeout design: remove the interactive command,
+  its implementation, the plugin manager, and terminal dependencies completely.
+- Keep the v1.7.7 correction after removal because it fixes the independent CLI
+  version mismatch.
 
 ### Repository cleanup
 
@@ -92,8 +91,6 @@ Readability is a release requirement, not a secondary concern.
 - A narrowly scoped lint configuration change is allowed only when the rule is
   purely stylistic, conflicts with the declared Go compatibility range, and the
   rationale is recorded next to the configuration.
-- Replace the CLI's `WriteString(fmt.Sprintf(...))` patterns with direct
-  `fmt.Fprintf` calls because that is both clearer and allocation-conscious.
 
 ## Test-Driven Development
 
@@ -112,18 +109,11 @@ Add black-box tests through the public Gig API for:
 The existing nested-goroutine and concurrent panic/recover regression tests run
 under the race detector and remain part of the release gate.
 
-### Plugin-manager regression tests
+### CLI removal regression test
 
-Add tests proving that:
-
-1. an already-canceled context prevents package loading from launching a long
-   operation and returns `context.Canceled`;
-2. `LoadPackage` creates a bounded default context;
-3. subprocess failures preserve useful package/build error context when no
-   cancellation occurred.
-
-Tests may inject the command runner where necessary, but production APIs must
-not expose test-only hooks.
+Add a subprocess test proving that `gig repl` follows the normal unknown-command
+path and no longer appears in usage. Observe it failing against the
+interactive-mode implementation before deleting production code.
 
 ## GitHub Actions
 
@@ -162,7 +152,9 @@ No automated GitHub Release or deployment workflow is added in this change.
 
 ## Delivery
 
-Work is isolated on `codex/production-readiness-fixes`.
+The original fixes were isolated on `codex/production-readiness-fixes`. Final
+delivery, including the superseding CLI removal, is isolated on
+`codex/remove-cli-repl`.
 
 Before publishing:
 
@@ -187,7 +179,8 @@ increased to mask the defect.
 - Ready channel operations retain Go-compatible behavior.
 - Existing concurrent goroutine and panic/recover regressions pass under
   `go test -race`.
-- The CLI uses Gig v1.7.7 and plugin subprocesses are bounded by context.
+- The CLI uses Gig v1.7.7 and contains no interactive command, plugin manager,
+  or terminal-line-editing dependency.
 - `study_ast` is absent.
 - Default root and CLI build/test commands pass.
 - Root and CLI lint pass without readability-reducing rewrites.

@@ -2,9 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix Gig's confirmed concurrency, cancellation, CLI, plugin-command, and GitHub Actions failures and prove the resulting pull request is green.
+> **Superseded CLI task:** Task 3 records work completed before the interactive
+> CLI was removed. Do not execute or restore that task. Final CLI scope and
+> delivery are defined by
+> [Remove Gig CLI REPL Implementation Plan](2026-07-10-remove-cli-repl.md).
 
-**Architecture:** Keep interpreter activation state per call, and make only interpreter-owned blocking channel operations context-aware through small `reflect.Select` helpers. Thread explicit contexts through CLI plugin subprocesses, keep arbitrary host-function cancellation out of scope, and extend GitHub Actions so both Go modules and the supported Go lines are enforced.
+**Goal:** Fix Gig's confirmed concurrency, cancellation, CLI, and GitHub Actions failures and prove the resulting pull request is green.
+
+**Architecture:** Keep interpreter activation state per call, and make only interpreter-owned blocking channel operations context-aware through small `reflect.Select` helpers. Keep arbitrary host-function cancellation out of scope, remove the superseded interactive CLI surface through the linked follow-up plan, and extend GitHub Actions so both Go modules and the supported Go lines are enforced.
 
 **Tech Stack:** Go 1.23.1+, `golang.org/x/tools/go/ssa`, `reflect.Select`, `context.Context`, GitHub Actions, GolangCI-Lint v2.4.0, Gosec v2.27.1, Govulncheck.
 
@@ -161,7 +166,11 @@ git add cancellation_test.go internal/interp/goroutine.go internal/interp/ops.go
 git commit -m "fix: cancel blocking interpreter channel operations"
 ```
 
-### Task 3: Bound plugin subprocesses and align the CLI module
+### Task 3 (superseded): Bound plugin subprocesses and align the CLI module
+
+This task is retained only as implementation history. Its version alignment
+remains valid, but the plugin-manager code and tests are deleted by the
+superseding plan.
 
 **Files:**
 - Create: `cmd/gig/pluginmgr/manager_test.go`
@@ -343,7 +352,7 @@ Expected: stress tests and every fuzz campaign PASS.
 
 ```bash
 git diff --stat main...HEAD
-git diff main...HEAD -- internal/interp cmd/gig/pluginmgr .github/workflows/go.yml README.md gig.go
+git diff main...HEAD -- internal/interp cmd/gig .github/workflows/go.yml README.md gig.go
 git status --short
 ```
 
@@ -351,7 +360,7 @@ Expected: control flow is clear; no unrelated file is committed; only pre-existi
 
 - [ ] **Step 4: Push and open a draft PR**
 
-Push `codex/production-readiness-fixes` to the GitHub remote and create a draft PR targeting `main` with the root cause, fix summary, and exact verification evidence.
+Push `codex/remove-cli-repl` to the GitHub remote and create a draft PR targeting `main` with the root cause, fix summary, and exact verification evidence.
 
 - [ ] **Step 5: Watch and repair GitHub Actions**
 

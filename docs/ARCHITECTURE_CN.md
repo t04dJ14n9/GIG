@@ -627,7 +627,8 @@ func init() {
 3. 输出是每个 import 路径在 `<dir>/packages/` 下一个文件。用户对
    `<modPath>/packages` 做 blank import，触发所有 `init()` 注册。
 
-`cmd/gig/main.go` 还暴露了 `repl` 和 `init` 子命令，详见 `cli-guide.md`。
+`cmd/gig/main.go` 提供 `init`、`gen` 和 `dump` 子命令，详见
+`cli-guide_CN.md`。
 
 ---
 

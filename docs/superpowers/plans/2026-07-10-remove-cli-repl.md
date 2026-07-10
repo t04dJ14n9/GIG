@@ -240,10 +240,12 @@ rg -n -S '\b(REPL|repl|pluginmgr|plugin manager|peterh/liner|go-runewidth)\b' \
   --glob '!docs/superpowers/specs/2026-07-10-remove-cli-repl-design.md' \
   --glob '!docs/superpowers/plans/2026-07-10-remove-cli-repl.md' \
   --glob '!docs/superpowers/specs/2026-07-10-production-readiness-fixes-design.md' \
-  --glob '!docs/superpowers/plans/2026-07-10-production-readiness-fixes.md'
+  --glob '!docs/superpowers/plans/2026-07-10-production-readiness-fixes.md' \
+  --glob '!cmd/gig/main_test.go'
 ```
 
-Expected: no output. The four design/history files may refer to removal or supersession, but no active product surface does.
+Expected: no output. The four design/history files and the regression test may
+refer to removal or supersession, but no active product surface does.
 
 - [ ] **Step 5: Commit the documentation cleanup**
 

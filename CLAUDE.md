@@ -68,7 +68,7 @@ Go Source → go/parser → go/types (type check) → go/ssa (SSA IR) → compil
 | `vm/` | Stack-based VM: fetch-decode-execute loop, frame pooling, goroutine spawning |
 | `importer/` | `types.Importer` implementation, `reflect.Type` ↔ `types.Type` conversion, global package registry |
 | `runner/` | VM execution orchestration: init() handling, VMPool (lock-free sync.Pool), global state snapshots |
-| `cmd/gig/` | CLI: `init`, `gen`, `repl` subcommands |
+| `cmd/gig/` | CLI: `init`, `gen`, `dump` subcommands |
 | `cmd/gig/gentool/` | Code generation engine: DirectCall wrappers, registration code |
 | `stdlib/packages/` | 71 pre-generated stdlib wrappers with DirectCall dispatch |
 

@@ -73,8 +73,8 @@ import (
 
 	// --- Cryptographic hashing (pure computation, no I/O) ---
 	_ "crypto/hmac"
-	_ "crypto/md5"
-	_ "crypto/sha1"
+	_ "crypto/md5"  // #nosec G501 -- Registered for Go compatibility, not recommended for security use.
+	_ "crypto/sha1" // #nosec G505 -- Registered for Go compatibility, not recommended for security use.
 	_ "crypto/sha256"
 	_ "crypto/sha512"
 	_ "crypto/subtle"
@@ -82,9 +82,9 @@ import (
 	// --- Symmetric ciphers (pure computation, no I/O) ---
 	_ "crypto/aes"
 	_ "crypto/cipher"
-	_ "crypto/des"
+	_ "crypto/des" // #nosec G502 -- Registered for Go compatibility, not recommended for security use.
 	_ "crypto/elliptic"
-	_ "crypto/rc4"
+	_ "crypto/rc4" // #nosec G503 -- Registered for Go compatibility, not recommended for security use.
 
 	// --- Path manipulation (pure string ops, no filesystem) ---
 	_ "path"

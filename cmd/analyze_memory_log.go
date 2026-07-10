@@ -43,7 +43,7 @@ func main() {
 	}
 
 	filename := flag.Arg(0)
-	file, err := os.Open(filename)
+	file, err := os.Open(filename) // #nosec G304 -- The user explicitly selects the log file to analyze.
 	if err != nil {
 		fmt.Printf("Error opening file: %v\n", err)
 		os.Exit(1)

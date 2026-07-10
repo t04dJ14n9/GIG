@@ -4,7 +4,7 @@ go 1.23.1
 
 require (
 	github.com/peterh/liner v1.2.2
-	github.com/t04dJ14n9/gig v1.7.6
+	github.com/t04dJ14n9/gig v1.7.7
 )
 
 require (

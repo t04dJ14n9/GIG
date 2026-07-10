@@ -1,12 +1,13 @@
 package tests
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/t04dJ14n9/gig"
 )
 
-// These tests are regressions for two interpreter concurrency bugs that
+// These tests are regressions for interpreter concurrency bugs that
 // only surfaced under load (and under `go test -race`), where a single
 // slow/unlucky schedule made CI hang until the 10-minute timeout:
 //
@@ -21,6 +22,10 @@ import (
 //     so recover() cleared the wrong frame and goroutines died without
 //     doing their work. The panicking frame is now reached via the
 //     threaded caller, which is per-goroutine.
+//
+//  3. runGo passed the spawning frame as the caller of a new goroutine.
+//     A child recover() could therefore consume the parent's panic. New
+//     goroutines now start with independent call ancestry.
 //
 // Run with -race and a high iteration count to give the scheduler enough
 // chances to interleave.
@@ -89,6 +94,25 @@ func ConcurrentRecover() int {
 }
 `
 
+const crossGoroutineRecoverSrc = `package main
+
+func childRecover(start <-chan struct{}, done chan<- bool) {
+	<-start
+	done <- recover() != nil
+}
+
+func CrossGoroutineRecover() (childRecovered bool) {
+	start := make(chan struct{})
+	done := make(chan bool)
+	go childRecover(start, done)
+	defer func() {
+		close(start)
+		childRecovered = <-done
+	}()
+	panic("parent panic")
+}
+`
+
 func TestConcurrentNestedGoroutines(t *testing.T) {
 	prog, err := gig.Build(nestedGoroutineSrc)
 	if err != nil {
@@ -120,5 +144,20 @@ func TestConcurrentPanicRecover(t *testing.T) {
 		if n, _ := res.(int); n != 100 {
 			t.Fatalf("iter %d: got %d, want 100", i, n)
 		}
+	}
+}
+
+func TestRecoverCannotCrossGoroutineBoundary(t *testing.T) {
+	prog, err := gig.Build(crossGoroutineRecoverSrc, gig.WithAllowPanic())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	result, err := prog.Run("CrossGoroutineRecover")
+	if err == nil {
+		t.Fatalf("CrossGoroutineRecover returned %v without error; child goroutine consumed parent panic", result)
+	}
+	if !strings.Contains(err.Error(), "parent panic") {
+		t.Fatalf("CrossGoroutineRecover error = %v, want parent panic", err)
 	}
 }

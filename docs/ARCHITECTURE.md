@@ -590,7 +590,7 @@ downstream `Extract`. Plain form panics with
 
 ## 11. Code generation — `cmd/gig/`
 
-The CLI has two relevant subcommands; `cli-guide.md` is the user-facing
+The CLI has three relevant subcommands; `cli-guide.md` is the user-facing
 walkthrough. From the architecture side:
 
 - `cmd/gig/commands/gen.go` parses `pkgs.go` for blank imports, then for each

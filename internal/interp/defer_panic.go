@@ -177,7 +177,7 @@ func (p *program) callBuiltinDirect(fr *frame, b *ssa.Builtin, args []value.Valu
 		}
 		panic("panic with no argument")
 	case "recover":
-		if fr.panicking {
+		if fr != nil && fr.panicking {
 			v := fr.panicVal
 			fr.panicking = false
 			fr.panicVal = nil

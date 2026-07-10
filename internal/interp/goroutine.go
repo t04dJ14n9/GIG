@@ -31,13 +31,13 @@ func (p *program) runGo(fr *frame, instr *ssa.Go) (continuation, []value.Value, 
 		ctx := fr.ctx
 		go func() {
 			defer func() { _ = recover() }()
-			_, _ = p.callSSA(ctx, fr, tgt, args, nil, 0)
+			_, _ = p.callSSA(ctx, nil, tgt, args, nil, 0)
 		}()
 		return contNext, nil, nil
 	case *ssa.Builtin:
 		go func() {
 			defer func() { _ = recover() }()
-			_, _ = p.callBuiltinDirect(fr, tgt, args)
+			_, _ = p.callBuiltinDirect(nil, tgt, args)
 		}()
 		return contNext, nil, nil
 	}

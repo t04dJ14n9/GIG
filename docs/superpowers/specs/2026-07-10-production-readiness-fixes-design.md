@@ -64,6 +64,10 @@ remote concurrency timeout and race-sensitive panic/recover behavior:
 The implementation must not overwrite or silently discard those existing
 changes.
 
+New goroutines must also start with independent call ancestry. A direct SSA or
+builtin target launched by `runGo` must not inherit the spawning frame as its
+`caller`, because `recover()` may only observe panic state in its own goroutine.
+
 ### CLI version and interactive-mode removal
 
 - Update `cmd/gig/go.mod` from Gig v1.7.6 to v1.7.7 and refresh only the module
@@ -107,7 +111,9 @@ Add black-box tests through the public Gig API for:
 4. ready channel operations continuing to return their normal values.
 
 The existing nested-goroutine and concurrent panic/recover regression tests run
-under the race detector and remain part of the release gate.
+under the race detector and remain part of the release gate. Add a deterministic
+test proving that `recover()` in a child goroutine cannot consume a parent
+goroutine's panic.
 
 ### CLI removal regression test
 
@@ -181,6 +187,7 @@ increased to mask the defect.
 - Ready channel operations retain Go-compatible behavior.
 - Existing concurrent goroutine and panic/recover regressions pass under
   `go test -race`.
+- A child goroutine cannot observe or recover its parent's panic.
 - The CLI uses Gig v1.7.7 and contains no interactive command, plugin manager,
   or terminal-line-editing dependency.
 - `study_ast` is absent.

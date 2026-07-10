@@ -598,7 +598,7 @@ if dst.Kind() == reflect.Interface {
 
 ## 11. 代码生成 —— `cmd/gig/`
 
-CLI 有两个相关子命令；`cli-guide.md` 是面向用户的走读。从架构角度看：
+CLI 有三个相关子命令；`cli-guide_CN.md` 是面向用户的走读。从架构角度看：
 
 - `cmd/gig/commands/gen.go` 解析 `pkgs.go` 里的 blank import，对每个 import
   路径调用 `gentool.PackageImport(path, outDir, "packages")`。

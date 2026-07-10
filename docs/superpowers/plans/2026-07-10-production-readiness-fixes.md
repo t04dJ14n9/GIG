@@ -32,13 +32,16 @@
 - Modify: `internal/interp/defer_panic.go`
 - Modify: `internal/interp/engine.go`
 - Modify: `internal/interp/frame.go`
+- Modify: `internal/interp/goroutine.go`
 - Modify: `internal/interp/ops.go`
 - Create: `tests/concurrency_race_test.go`
 - Create: `docs/concurrency-race-root-cause.md`
 
 **Interfaces:**
 - Consumes: existing `program.callSSA`, `typeResolver.resolveType`, deferred interpreted functions, and builtin `recover` handling.
-- Produces: per-resolution recursion tracking and per-call panic-frame traversal with no shared mutable panic or in-flight resolution state.
+- Produces: per-resolution recursion tracking, per-call panic-frame traversal,
+  and independent goroutine call ancestry with no shared mutable panic or
+  in-flight resolution state.
 
 - [ ] **Step 1: Review the current diff without rewriting it**
 
@@ -48,12 +51,14 @@ sed -n '1,220p' tests/concurrency_race_test.go
 sed -n '1,240p' docs/concurrency-race-root-cause.md
 ```
 
-Expected: shared `program.panicFrame` and `typeResolver.inFlight` are gone; tests exercise nested goroutines and concurrent panic/recover.
+Expected: shared `program.panicFrame` and `typeResolver.inFlight` are gone;
+`runGo` starts targets with nil caller ancestry; tests exercise nested
+goroutines, concurrent panic/recover, and cross-goroutine recover isolation.
 
 - [ ] **Step 2: Run the focused race regressions**
 
 ```bash
-go test -race -count=1 -run '^(TestConcurrentNestedGoroutines|TestConcurrentPanicRecover)$' ./tests
+go test -race -count=1 -run '^(TestConcurrentNestedGoroutines|TestConcurrentPanicRecover|TestRecoverCannotCrossGoroutineBoundary)$' ./tests
 ```
 
 Expected: PASS with no race report or timeout.
@@ -61,7 +66,7 @@ Expected: PASS with no race report or timeout.
 - [ ] **Step 3: Commit only the existing concurrency fix**
 
 ```bash
-git add internal/interp/defer_panic.go internal/interp/engine.go internal/interp/frame.go internal/interp/ops.go tests/concurrency_race_test.go docs/concurrency-race-root-cause.md
+git add internal/interp/defer_panic.go internal/interp/engine.go internal/interp/frame.go internal/interp/goroutine.go internal/interp/ops.go tests/concurrency_race_test.go docs/concurrency-race-root-cause.md
 git commit -m "fix: isolate concurrent interpreter state"
 ```
 
@@ -288,7 +293,8 @@ Keep GolangCI-Lint v2.4.0. Add a second `golangci/golangci-lint-action@v9` invoc
 - [ ] **Step 4: Pin and enforce Gosec**
 
 Use `securego/gosec@v2.27.1` and remove `-no-fail`, preserving generated-code
-and non-production directory exclusions. Scan the nested CLI module in a
+and non-production directory exclusions. Configure the security job with Go
+1.25.x, the scanner's minimum toolchain, and scan the nested CLI module in a
 separate step. Keep its deliberate source-path and generated-permission
 operations readable with localized, explained `#nosec` annotations.
 
@@ -305,6 +311,7 @@ go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0 run --timeo
 go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -exclude=G115 -exclude-generated -exclude-dir=stdlib/packages -exclude-dir=examples -exclude-dir=benchmarks -exclude-dir=tests -exclude-dir=reference -exclude-dir=gentool -exclude-dir=cmd/gig ./...
 (cd cmd/gig && go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -exclude=G115 -exclude-generated -exclude-dir=gentool ./...)
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+(cd cmd/gig && go run golang.org/x/vuln/cmd/govulncheck@latest ./...)
 ```
 
 Expected: every command exits 0 using the same GolangCI-Lint version as CI.

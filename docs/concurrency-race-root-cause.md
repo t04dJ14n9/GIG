@@ -4,9 +4,9 @@
 **Symptom:** CI (`go test -race`, Go 1.25.x) hung on
 `TestConcurrentStatefulFixtures/NestedGoroutineSum` until the 10-minute test
 timeout, then failed. Passed locally in isolation.
-**Scope:** Two independent data races in the SSA interpreter
-(`internal/interp`), both rooted in per-goroutine execution state being stored
-on the shared `*program`/resolver.
+**Scope:** Three concurrency defects in the SSA interpreter
+(`internal/interp`), all rooted in per-goroutine execution state being shared
+across goroutine boundaries.
 
 ---
 
@@ -215,14 +215,53 @@ if fn, ok := rec.fn.Func(); ok {
 
 ---
 
-## 5. Common root cause
+## 5. Follow-up — goroutine call ancestry crossed the concurrency boundary
 
-Both bugs are the same class of error: **execution state that is logically
+### Mechanism
+
+The frame-threading fix for `recover()` exposed one more boundary error.
+`runGo` launched a direct SSA function with the spawning frame as its
+`caller`:
+
+```go
+_, _ = p.callSSA(ctx, fr, target, args, nil, 0)
+```
+
+That caller relationship is valid for an ordinary nested call, but not for a
+new goroutine, whose call stack must be independent. While the parent was
+unwinding, a child function that called `recover()` could therefore see
+`caller.panicking`, clear the parent's panic state, and race with the parent's
+unwind.
+
+A deterministic regression coordinates the two goroutines with channels: the
+parent signals the child from a deferred function after panic state is set,
+and the child calls `recover()`. Before the fix, the child consumed
+`"parent panic"` and the parent returned normally.
+
+### Fix
+
+Start direct SSA and builtin goroutines without caller ancestry:
+
+```go
+_, _ = p.callSSA(ctx, nil, target, args, nil, 0)
+_, _ = p.callBuiltinDirect(nil, builtin, args)
+```
+
+The builtin trampoline treats a nil frame as not panicking. Indirect
+interpreted function values already re-enter through `CallContext` with a nil
+caller, so all goroutine target forms now share the same isolation boundary.
+
+---
+
+## 6. Common root cause
+
+All three bugs are the same class of error: **execution state that is logically
 per-goroutine was stored on a process-wide singleton** (`typeResolver.inFlight`
-and `program.panicFrame`). A single interpreter instance serves many
+and `program.panicFrame`), or was threaded across a goroutine boundary (the
+spawning frame passed as `caller`). A single interpreter instance serves many
 interpreted goroutines — every interpreted `go` statement spawns a real host
-goroutine sharing one `*program` — so any mutable field on `*program` that
-models "the current call's state" is a latent race.
+goroutine sharing one `*program` — so mutable state that models "the current
+call" must remain on that goroutine's own call chain.
 
 The fix in both cases is the same shape: move the state off the singleton and
 thread it through the call stack (as a function parameter, or via the existing
@@ -244,7 +283,7 @@ additional locking.
 
 ---
 
-## 6. Verification
+## 7. Verification
 
 - `TestConcurrentStatefulFixtures` (the original CI test): passes under
   `-race`.
@@ -253,6 +292,8 @@ additional locking.
     fixture (guards bug 1).
   - `TestConcurrentPanicRecover` — 300 iterations of 100 concurrently
     panicking/recovering goroutines (guards bug 2).
+  - `TestRecoverCannotCrossGoroutineBoundary` — proves a child goroutine cannot
+    consume its parent's panic (guards the follow-up ancestry defect).
 - Both went from reliable hang / `WARNING: DATA RACE` before the fix to clean
   across many `-race` runs after.
 - Single-threaded `recover()` semantics confirmed intact (caught the incomplete

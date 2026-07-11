@@ -20,13 +20,13 @@ import (
 // visitInstr dispatches one SSA instruction. The triple return is
 // (continuation, return-values-when-Return, error). Only contReturn
 // uses the value slice; otherwise it is nil.
-func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, depth int) (continuation, []value.Value, error) {
+func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, depth int, resultScratch []value.Value) (continuation, []value.Value, error) {
 	switch x := instr.(type) {
 	case *ssa.DebugRef:
 		return contNext, nil, nil
 
 	case *ssa.Return:
-		return p.runReturn(fr, x)
+		return p.runReturn(fr, x, resultScratch)
 
 	case *ssa.If:
 		return p.runIf(fr, x)
@@ -222,14 +222,14 @@ func (p *program) constToValue(c *ssa.Const) (value.Value, error) {
 
 // --- per-instruction runners ------------------------------------------------
 
-func (p *program) runReturn(fr *frame, instr *ssa.Return) (continuation, []value.Value, error) {
-	results := make([]value.Value, len(instr.Results))
-	for i, r := range instr.Results {
-		v, err := p.readValue(fr, r)
+func (p *program) runReturn(fr *frame, instr *ssa.Return, resultScratch []value.Value) (continuation, []value.Value, error) {
+	results := prepareValueSlice(resultScratch, len(instr.Results))
+	for i, result := range instr.Results {
+		resolved, err := p.readValue(fr, result)
 		if err != nil {
 			return contNext, nil, err
 		}
-		results[i] = v
+		results[i] = resolved
 	}
 	fr.block = nil
 	return contReturn, results, nil
@@ -524,7 +524,12 @@ func (p *program) runDirectInterpretedCall(fr *frame, instr *ssa.Call, fn *ssa.F
 	if err != nil {
 		return contNext, nil, err
 	}
-	results, err := p.callSSA(fr.ctx, fr, fn, args, nil, depth+1)
+	var oneResult [1]value.Value
+	var resultScratch []value.Value
+	if fn.Signature.Results().Len() == 1 {
+		resultScratch = oneResult[:0]
+	}
+	results, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, resultScratch)
 	if err != nil {
 		return contNext, nil, err
 	}

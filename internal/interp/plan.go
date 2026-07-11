@@ -309,10 +309,10 @@ func (r intRef) read(fr *frame) int64 {
 	return fr.values[r.valueIndex].Int()
 }
 
-func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int) (continuation, []value.Value, error) {
+func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int, resultScratch []value.Value) (continuation, []value.Value, error) {
 	switch op.kind {
 	case planGeneric:
-		return p.visitInstr(caller, fr, op.instr, depth)
+		return p.visitInstr(caller, fr, op.instr, depth, resultScratch)
 	case planIntBinOp:
 		x := op.x.read(fr)
 		y := op.y.read(fr)
@@ -356,11 +356,11 @@ func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int
 	case planIntIndexLoad, planIntIndexStore:
 		s, ok := fr.values[op.slice].IntSlice()
 		if !ok {
-			cont, results, err := p.visitInstr(caller, fr, op.instr, depth)
+			cont, results, err := p.visitInstr(caller, fr, op.instr, depth, resultScratch)
 			if err != nil || cont != contNext {
 				return cont, results, err
 			}
-			return p.visitInstr(caller, fr, op.consumer, depth)
+			return p.visitInstr(caller, fr, op.consumer, depth, resultScratch)
 		}
 		idx := int(op.index.read(fr))
 		if op.kind == planIntIndexLoad {

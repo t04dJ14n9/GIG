@@ -261,11 +261,15 @@ func TestRegistryBridgeLookupVarFallsBackFromMalformedObjectStorage(t *testing.T
 			pkg := reg.RegisterPackage("example/variable-fallback", "variablefallback")
 			objectStorage := 11
 			pkg.AddVariable("Mutable", &objectStorage, "")
+			pkg.Objects["Mutable"].Name = "MalformedObjectName"
 			pkg.Objects["Mutable"].Value = tc.malformed
 
 			variable, ok := FromRegistry(reg).LookupVar("example/variable-fallback", "Mutable")
 			if !ok {
 				t.Fatal("LookupVar did not use the valid legacy storage")
+			}
+			if variable.Name() != "Mutable" {
+				t.Fatalf("Name = %q, want requested legacy name Mutable", variable.Name())
 			}
 			if reg.legacyVarHits != 1 {
 				t.Fatalf("legacy variable lookups = %d, want 1", reg.legacyVarHits)

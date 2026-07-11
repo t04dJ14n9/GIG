@@ -221,6 +221,32 @@ func TestCallHostFuncMethodCompatibilityFallbackPreservesInvocationErrors(t *tes
 		}
 	})
 
+	t.Run("resolved method lookup-miss-shaped error", func(t *testing.T) {
+		wantErr := &methodNotFoundError{
+			method:   "Nested",
+			receiver: reflect.TypeOf(hostFallbackReceiver{}),
+		}
+		method := &recordingDirectMethod{
+			recordingHostMethod: &recordingHostMethod{result: value.MakeInt(9)},
+			directErr:           wantErr,
+		}
+		env := methodFallbackEnv{methodName: fn.Name(), method: method}
+		prog := &program{
+			ssaPkg:    ssaPkg,
+			env:       env,
+			converter: value.DefaultConverter(),
+			resolver:  newTypeResolver(env, ssaPkg.Pkg.Path()),
+		}
+
+		_, err := prog.callHostFunc(context.Background(), fn, []value.Value{receiver})
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("callHostFunc error = %v, want resolved method error %v", err, wantErr)
+		}
+		if method.directCalls != 1 || method.calls != 0 {
+			t.Fatalf("direct=%d generic=%d, want 1/0", method.directCalls, method.calls)
+		}
+	})
+
 	t.Run("genuine method miss", func(t *testing.T) {
 		env := methodFallbackEnv{}
 		prog := &program{

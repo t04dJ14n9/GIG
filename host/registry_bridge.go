@@ -101,11 +101,9 @@ func (b *registryBridge) LookupFunc(pkgPath, name string) (Function, bool) {
 // — but the global's underlying type may itself be a pointer (e.g.
 // time.UTC is *time.Location), in which case we keep it as-is.
 func (b *registryBridge) LookupVar(pkgPath, name string) (Variable, bool) {
-	adapterName := name
 	_, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindVariable)
 	if ok {
-		adapterName = obj.Name
-		if variable, valid := newReflectVar(adapterName, obj.Value); valid {
+		if variable, valid := newReflectVar(obj.Name, obj.Value); valid {
 			return variable, true
 		}
 	}
@@ -116,7 +114,7 @@ func (b *registryBridge) LookupVar(pkgPath, name string) (Variable, bool) {
 	if !ok {
 		return nil, false
 	}
-	return newReflectVar(adapterName, ptr)
+	return newReflectVar(name, ptr)
 }
 
 func newReflectVar(name string, ptr any) (Variable, bool) {

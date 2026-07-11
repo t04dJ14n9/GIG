@@ -7,7 +7,6 @@ package interp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"go/types"
 	"reflect"
@@ -22,6 +21,12 @@ import (
 type methodNotFoundError struct {
 	method   string
 	receiver reflect.Type
+}
+
+type methodDispatchResult struct {
+	results      []value.Value
+	receiverType reflect.Type
+	found        bool
 }
 
 func (e *methodNotFoundError) Error() string {
@@ -78,13 +83,12 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 		// like bytes/list whose methods register through the legacy
 		// MethodDirectCall path that LookupFunc doesn't see.
 		if len(args) > 0 {
-			results, err := p.invokeMethodOn(ctx, args[0], fn.Name(), args[1:])
-			if err == nil {
-				return results, nil
-			}
-			var miss *methodNotFoundError
-			if !errors.As(err, &miss) {
+			dispatch, err := p.tryInvokeMethodOn(ctx, args[0], fn.Name(), args[1:])
+			if err != nil {
 				return nil, err
+			}
+			if dispatch.found {
+				return dispatch.results, nil
 			}
 		}
 		return nil, fmt.Errorf("interp: host function %s.%s not found", pkgPath, fn.Name())
@@ -111,6 +115,17 @@ func (p *program) lookupHostFunc(fn *ssa.Function, pkgPath string) (host.Functio
 // interpreted SSA package (for methods on user-defined types) and then
 // reflect.MethodByName on the host receiver.
 func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, method string, args []value.Value) ([]value.Value, error) {
+	dispatch, err := p.tryInvokeMethodOn(ctx, receiver, method, args)
+	if err != nil {
+		return nil, err
+	}
+	if !dispatch.found {
+		return nil, &methodNotFoundError{method: method, receiver: dispatch.receiverType}
+	}
+	return dispatch.results, nil
+}
+
+func (p *program) tryInvokeMethodOn(ctx context.Context, receiver value.Value, method string, args []value.Value) (methodDispatchResult, error) {
 	// Methods declared on interpreted types live as SSA functions on
 	// the package, named like "(*AdderStruct).Add" or "AdderStruct.Add".
 	// When the receiver arrived through a MakeInterface box we unwrap
@@ -119,10 +134,13 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 	// than as an interface.
 	dynRecv, rv, err := p.hostReceiverReflect(receiver)
 	if err != nil {
-		return nil, err
+		return methodDispatchResult{}, err
 	}
+	dispatch := methodDispatchResult{receiverType: rv.Type()}
 	if hm, ok := p.lookupHostMethod(rv, method); ok {
-		return callResolvedHostMethod(hm, dynRecv, args)
+		dispatch.found = true
+		dispatch.results, err = callResolvedHostMethod(hm, dynRecv, args)
+		return dispatch, err
 	}
 	if fn := p.lookupInterpretedMethod(dynRecv, method); fn != nil {
 		// Go's spec lets a *T receiver call a value-receiver method
@@ -132,7 +150,9 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 		// Field/Store ops will see a kind mismatch.
 		recv := p.adjustReceiverShape(dynRecv, fn)
 		all := append([]value.Value{recv}, args...)
-		return p.callSSA(ctx, nil, fn, all, nil, 0)
+		dispatch.found = true
+		dispatch.results, err = p.callSSA(ctx, nil, fn, all, nil, 0)
+		return dispatch, err
 	}
 	conv := value.DefaultConverter()
 	m := rv.MethodByName(method)
@@ -148,8 +168,9 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 		}
 	}
 	if !m.IsValid() {
-		return nil, &methodNotFoundError{method: method, receiver: rv.Type()}
+		return dispatch, nil
 	}
+	dispatch.found = true
 	mt := m.Type()
 	rargs := make([]reflect.Value, len(args))
 	for i, a := range args {
@@ -159,7 +180,7 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 		}
 		ra, err := conv.ToReflect(a, target)
 		if err != nil {
-			return nil, fmt.Errorf("interp: method %s arg %d: %w", method, i, err)
+			return dispatch, fmt.Errorf("interp: method %s arg %d: %w", method, i, err)
 		}
 		rargs[i] = ra
 	}
@@ -168,11 +189,12 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 	for i, r := range rresults {
 		v, err := conv.FromReflect(r)
 		if err != nil {
-			return nil, fmt.Errorf("interp: method %s result %d: %w", method, i, err)
+			return dispatch, fmt.Errorf("interp: method %s result %d: %w", method, i, err)
 		}
 		out[i] = v
 	}
-	return out, nil
+	dispatch.results = out
+	return dispatch, nil
 }
 
 func (p *program) hostReceiverReflect(receiver value.Value) (value.Value, reflect.Value, error) {

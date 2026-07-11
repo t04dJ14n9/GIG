@@ -71,7 +71,7 @@ storage. Hot execution follows those indexes directly, avoiding map lookups
 without embedding frame-specific `*Cell` pointers in a cached plan or creating
 another value store.
 
-Each bound block contains:
+Each block plan contains:
 
 1. an optional generic Phi group;
 2. one ordered list of operations.

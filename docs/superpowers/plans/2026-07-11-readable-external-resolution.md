@@ -97,7 +97,43 @@ git commit -m "test(host): characterize external object adapters"
 - Consumes: `PackageRegistry.GetPackageByPath/GetPackageByName` and `external.ExternalObject`.
 - Produces: `registryBridge.lookupObject(pkgPath, name string, want external.ObjectKind) (*importer.ExternalPackage, *external.ExternalObject, bool)`.
 
-- [ ] **Step 1: Add the object helper without changing `PackageRegistry`**
+- [ ] **Step 1: Write and run a failing single-resolution test**
+
+Add a test registry that embeds the real implementation and counts only the two relevant lookup routes:
+
+```go
+type countingRegistry struct {
+	*importer.Registry
+	packageLookups int
+	legacyFuncLookups int
+}
+
+func (r *countingRegistry) GetPackageByPath(path string) *importer.ExternalPackage {
+	r.packageLookups++
+	return r.Registry.GetPackageByPath(path)
+}
+
+func (r *countingRegistry) LookupExternalFunc(pkgPath, name string) (any, bool) {
+	r.legacyFuncLookups++
+	return r.Registry.LookupExternalFunc(pkgPath, name)
+}
+
+func TestRegistryBridgeResolvesFunctionFromOneObjectLookup(t *testing.T) {
+	reg := &countingRegistry{Registry: importer.NewRegistry()}
+	pkg := reg.RegisterPackage("example/once", "once")
+	pkg.AddFunction("Value", func() int { return 7 }, "")
+	if _, ok := FromRegistry(reg).LookupFunc("example/once", "Value"); !ok {
+		t.Fatal("LookupFunc did not find Value")
+	}
+	if reg.packageLookups != 1 || reg.legacyFuncLookups != 0 {
+		t.Fatalf("package lookups=%d legacy function lookups=%d, want 1/0", reg.packageLookups, reg.legacyFuncLookups)
+	}
+}
+```
+
+Run `go test ./host -run TestRegistryBridgeResolvesFunctionFromOneObjectLookup -count=1`. Expected RED: the current bridge performs both `LookupExternalFunc` and a package lookup.
+
+- [ ] **Step 2: Add the object helper without changing `PackageRegistry`**
 
 ```go
 func (b *registryBridge) lookupObject(pkgPath, name string, want external.ObjectKind) (*importer.ExternalPackage, *external.ExternalObject, bool) {
@@ -111,15 +147,15 @@ func (b *registryBridge) lookupObject(pkgPath, name string, want external.Object
 }
 ```
 
-- [ ] **Step 2: Build function adapters from the one object**
+- [ ] **Step 3: Build function adapters from the one object**
 
 `LookupFunc` validates `reflect.ValueOf(obj.Value).Kind() == reflect.Func` and returns `reflectFunc{name: obj.Name, fn: rv, directCall: obj.DirectCall}`. It no longer calls `LookupExternalFunc` and then reopens `pkg.Objects`.
 
-- [ ] **Step 3: Use the helper for variables, constants, and types**
+- [ ] **Step 4: Use the helper for variables, constants, and types**
 
 Construct each adapter from the object's `Name`, `Value`, and `Type`. `LookupType` reads `pkg.Types[name]` from the package returned by the same helper call for the canonical `reflect.Type`; it must not perform a second package lookup.
 
-- [ ] **Step 4: Run host and importer tests**
+- [ ] **Step 5: Run host and importer tests**
 
 ```bash
 go test ./host ./importer -count=1
@@ -127,7 +163,7 @@ go test ./host ./importer -count=1
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit single-object resolution**
+- [ ] **Step 6: Commit single-object resolution**
 
 ```bash
 git add host/registry_bridge.go host/registry_bridge_test.go

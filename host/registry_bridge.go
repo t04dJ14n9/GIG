@@ -73,14 +73,24 @@ func (b *registryBridge) lookupObject(pkgPath, name string, want external.Object
 // reflect.Value.Call; functions without wrappers fall back to reflect.
 func (b *registryBridge) LookupFunc(pkgPath, name string) (Function, bool) {
 	_, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindFunction)
+	if ok {
+		rv := reflect.ValueOf(obj.Value)
+		if rv.Kind() == reflect.Func {
+			return &reflectFunc{name: obj.Name, fn: rv, directCall: obj.DirectCall}, true
+		}
+	}
+	if b == nil || b.reg == nil {
+		return nil, false
+	}
+	fn, ok := b.reg.LookupExternalFunc(pkgPath, name)
 	if !ok {
 		return nil, false
 	}
-	rv := reflect.ValueOf(obj.Value)
+	rv := reflect.ValueOf(fn)
 	if rv.Kind() != reflect.Func {
 		return nil, false
 	}
-	return &reflectFunc{name: obj.Name, fn: rv, directCall: obj.DirectCall}, true
+	return &reflectFunc{name: name, fn: rv}, true
 }
 
 // LookupVar returns the host-side address of a registered variable.
@@ -91,16 +101,27 @@ func (b *registryBridge) LookupFunc(pkgPath, name string) (Function, bool) {
 // — but the global's underlying type may itself be a pointer (e.g.
 // time.UTC is *time.Location), in which case we keep it as-is.
 func (b *registryBridge) LookupVar(pkgPath, name string) (Variable, bool) {
+	adapterName := name
+	var ptr any
 	_, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindVariable)
-	if !ok {
-		return nil, false
+	if ok {
+		adapterName = obj.Name
+		ptr = obj.Value
+	} else {
+		if b == nil || b.reg == nil {
+			return nil, false
+		}
+		ptr, ok = b.reg.LookupExternalVar(pkgPath, name)
+		if !ok {
+			return nil, false
+		}
 	}
-	addr := reflect.ValueOf(obj.Value)
+	addr := reflect.ValueOf(ptr)
 	if addr.Kind() != reflect.Ptr {
 		// Defensive: registry should always hand back a pointer.
-		return &reflectVar{name: obj.Name, rv: addr}, true
+		return &reflectVar{name: adapterName, rv: addr}, true
 	}
-	return &reflectVar{name: obj.Name, rv: addr.Elem(), addr: addr}, true
+	return &reflectVar{name: adapterName, rv: addr.Elem(), addr: addr}, true
 }
 
 // LookupConst is best-effort: legacy gig stores const values inside the
@@ -122,14 +143,19 @@ func (b *registryBridge) LookupConst(pkgPath, name string) (Constant, bool) {
 // legacy registry.
 func (b *registryBridge) LookupType(pkgPath, name string) (Type, bool) {
 	pkg, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindType)
+	if ok {
+		if rt, found := pkg.Types[name]; found && rt != nil {
+			return &reflectType{name: obj.Name, rt: rt}, true
+		}
+	}
+	if b == nil || b.reg == nil {
+		return nil, false
+	}
+	rt, ok := b.reg.LookupExternalTypeByName(pkgPath, name)
 	if !ok {
 		return nil, false
 	}
-	rt, ok := pkg.Types[name]
-	if !ok || rt == nil {
-		return nil, false
-	}
-	return &reflectType{name: obj.Name, rt: rt}, true
+	return &reflectType{name: name, rt: rt}, true
 }
 
 func (b *registryBridge) LookupReflectType(t types.Type) (reflect.Type, bool) {

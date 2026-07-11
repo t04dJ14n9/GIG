@@ -436,105 +436,119 @@ func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) (con
 
 func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) (continuation, []value.Value, error) {
 	common := instr.Common()
-	// Interface method invocation: x.M(...) where x: I (interface).
-	// SSA models this with Common.IsInvoke()==true; Common.Method names
-	// the method, and Common.Value is the interface receiver.
 	if common.IsInvoke() {
-		recvV, err := p.readValue(fr, common.Value)
-		if err != nil {
-			return contNext, nil, err
-		}
-		args := make([]value.Value, len(common.Args))
-		for i, a := range common.Args {
-			v, err := p.readValue(fr, a)
-			if err != nil {
-				return contNext, nil, err
-			}
-			args[i] = v
-		}
-		results, err := p.invokeMethodOn(fr.ctx, recvV, common.Method.Name(), args)
-		if err != nil {
-			return contNext, nil, err
-		}
-		stored, err := p.packResults(instr.Type(), results)
-		if err != nil {
-			return contNext, nil, err
-		}
-		fr.setValue(instr, stored)
-		return contNext, nil, nil
+		return p.runInvokeCall(caller, fr, instr, common, depth)
 	}
-	// Built-ins (len, cap, append, ...) come through as *ssa.Builtin.
-	if b, ok := common.Value.(*ssa.Builtin); ok {
-		out, err := p.callBuiltin(caller, fr, b, common.Args)
+	if builtin, ok := common.Value.(*ssa.Builtin); ok {
+		out, err := p.callBuiltin(caller, fr, builtin, common.Args)
 		if err != nil {
 			return contNext, nil, err
 		}
 		fr.setValue(instr, out)
 		return contNext, nil, nil
 	}
-	// Direct call to *ssa.Function — the common case.
 	if fn, ok := common.Value.(*ssa.Function); ok {
-		args := make([]value.Value, len(common.Args))
-		for i, a := range common.Args {
-			v, err := p.readValue(fr, a)
-			if err != nil {
-				return contNext, nil, err
-			}
-			args[i] = v
-		}
-		// Body-less SSA functions are external host symbols (fmt.Sprintf,
-		// etc.) declared via the importer but not implemented in the
-		// interpreted source. Dispatch to host.Environment.
 		if len(fn.Blocks) == 0 {
-			results, err := p.callHostFunc(fr.ctx, fn, args)
-			if err != nil {
-				return contNext, nil, err
-			}
-			stored, err := p.packResults(instr.Type(), results)
-			if err != nil {
-				return contNext, nil, err
-			}
-			fr.setValue(instr, stored)
-			return contNext, nil, nil
+			return p.runHostFunctionCall(fr, instr, fn, common.Args)
 		}
-		results, err := p.callSSA(fr.ctx, fr, fn, args, nil, depth+1)
-		if err != nil {
-			return contNext, nil, err
-		}
-		stored, err := p.packResults(instr.Type(), results)
-		if err != nil {
-			return contNext, nil, err
-		}
-		fr.setValue(instr, stored)
-		return contNext, nil, nil
+		return p.runDirectInterpretedCall(fr, instr, fn, common.Args, depth)
 	}
-	// Indirect call: target is some SSA value whose runtime form is a
-	// reflect.Func (closure produced by MakeClosure, or a function
-	// stored in a slice/struct/map). Read the value, call via reflect.
+	return p.runIndirectCall(fr, instr, common, depth)
+}
+
+func (p *program) readValuesInto(fr *frame, refs []ssa.Value, scratch []value.Value) ([]value.Value, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	var values []value.Value
+	if cap(scratch) >= len(refs) {
+		values = scratch[:len(refs)]
+	} else {
+		values = make([]value.Value, len(refs))
+	}
+	for i, ref := range refs {
+		resolved, err := p.readValue(fr, ref)
+		if err != nil {
+			return nil, err
+		}
+		values[i] = resolved
+	}
+	return values, nil
+}
+
+func (p *program) finishCall(fr *frame, instr *ssa.Call, results []value.Value) (continuation, []value.Value, error) {
+	stored, err := p.packResults(instr.Type(), results)
+	if err != nil {
+		return contNext, nil, err
+	}
+	fr.setValue(instr, stored)
+	return contNext, nil, nil
+}
+
+// runInvokeCall executes an interface method invocation: x.M(...) where x: I.
+// SSA models this with Common.IsInvoke()==true; Common.Method names the method,
+// and Common.Value is the interface receiver.
+func (p *program) runInvokeCall(_ *frame, fr *frame, instr *ssa.Call, common *ssa.CallCommon, _ int) (continuation, []value.Value, error) {
+	recvV, err := p.readValue(fr, common.Value)
+	if err != nil {
+		return contNext, nil, err
+	}
+	args, err := p.readValuesInto(fr, common.Args, nil)
+	if err != nil {
+		return contNext, nil, err
+	}
+	results, err := p.invokeMethodOn(fr.ctx, recvV, common.Method.Name(), args)
+	if err != nil {
+		return contNext, nil, err
+	}
+	return p.finishCall(fr, instr, results)
+}
+
+// runHostFunctionCall dispatches a body-less SSA function through the host
+// environment.
+func (p *program) runHostFunctionCall(fr *frame, instr *ssa.Call, fn *ssa.Function, refs []ssa.Value) (continuation, []value.Value, error) {
+	args, err := p.readValuesInto(fr, refs, nil)
+	if err != nil {
+		return contNext, nil, err
+	}
+	results, err := p.callHostFunc(fr.ctx, fn, args)
+	if err != nil {
+		return contNext, nil, err
+	}
+	return p.finishCall(fr, instr, results)
+}
+
+func (p *program) runDirectInterpretedCall(fr *frame, instr *ssa.Call, fn *ssa.Function, refs []ssa.Value, depth int) (continuation, []value.Value, error) {
+	var oneArg [1]value.Value
+	args, err := p.readValuesInto(fr, refs, oneArg[:0])
+	if err != nil {
+		return contNext, nil, err
+	}
+	results, err := p.callSSA(fr.ctx, fr, fn, args, nil, depth+1)
+	if err != nil {
+		return contNext, nil, err
+	}
+	return p.finishCall(fr, instr, results)
+}
+
+// runIndirectCall executes a closure or other function value through its
+// interpreted implementation when available, falling back to reflect.Call.
+func (p *program) runIndirectCall(fr *frame, instr *ssa.Call, common *ssa.CallCommon, depth int) (continuation, []value.Value, error) {
 	target, err := p.readValue(fr, common.Value)
 	if err != nil {
 		return contNext, nil, err
 	}
 	if fn, ok := target.Func(); ok {
 		if interpreted, ok := fn.(*interpretedFunc); ok {
-			args := make([]value.Value, len(common.Args))
-			for i, a := range common.Args {
-				v, err := p.readValue(fr, a)
-				if err != nil {
-					return contNext, nil, err
-				}
-				args[i] = v
+			args, err := p.readValuesInto(fr, common.Args, nil)
+			if err != nil {
+				return contNext, nil, err
 			}
 			results, err := interpreted.CallContext(fr.ctx, args, depth+1)
 			if err != nil {
 				return contNext, nil, err
 			}
-			stored, err := p.packResults(instr.Type(), results)
-			if err != nil {
-				return contNext, nil, err
-			}
-			fr.setValue(instr, stored)
-			return contNext, nil, nil
+			return p.finishCall(fr, instr, results)
 		}
 	}
 	rv, err := p.reflectOf(target, nil)
@@ -546,13 +560,13 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 			fmt.Errorf("interp: %s: call target %T is not callable (kind=%s)",
 				fr.fn.Name(), common.Value, rv.Kind())
 	}
-	rargs := make([]reflect.Value, len(common.Args))
-	for i, a := range common.Args {
-		av, err := p.readValue(fr, a)
-		if err != nil {
-			return contNext, nil, err
-		}
-		rargs[i], err = p.converter.ToReflect(av, rv.Type().In(i))
+	args, err := p.readValuesInto(fr, common.Args, nil)
+	if err != nil {
+		return contNext, nil, err
+	}
+	rargs := make([]reflect.Value, len(args))
+	for i, arg := range args {
+		rargs[i], err = p.converter.ToReflect(arg, rv.Type().In(i))
 		if err != nil {
 			return contNext, nil, err
 		}
@@ -566,12 +580,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 		}
 		results[i] = v
 	}
-	stored, err := p.packResults(instr.Type(), results)
-	if err != nil {
-		return contNext, nil, err
-	}
-	fr.setValue(instr, stored)
-	return contNext, nil, nil
+	return p.finishCall(fr, instr, results)
 }
 
 // packResults turns a function's []value.Value result tuple into a

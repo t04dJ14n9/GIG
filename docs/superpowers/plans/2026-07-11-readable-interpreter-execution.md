@@ -53,9 +53,102 @@ go test ./tests -run '^$' -bench '^BenchmarkGig_(ArithmeticSum|FibRecursive|FibI
 
 Expected: both benchmark commands pass. Save each median `ns/op`, `B/op`, and `allocs/op`; calculate `3 * median(ns/op)` as its hard ceiling.
 
-- [ ] **Step 2: Replace tests of parallel fast-path internals with tests of the target model**
+- [ ] **Step 2: Add behavior regressions before changing production code**
 
-In `internal/interp/fuse_test.go`, replace `TestFrameLayoutCachesFusableIndexAddrConsumers`, `TestFrameLayoutCachesFastIntLoopPlan`, and `TestTypedFastSlotMaterializesBeforeGenericRead` with:
+Add to `internal/interp/interp_test.go`:
+
+```go
+func TestInterp_PhisUsePredecessorSnapshot(t *testing.T) {
+	const src = `
+func SwapLoop(n int) int {
+	a, b := 1, 2
+	for i := 0; i < n; i++ { a, b = b, a }
+	return a*10 + b
+}`
+	expectInt(t, runProgram(t, src, "SwapLoop", 1), 21)
+	expectInt(t, runProgram(t, src, "SwapLoop", 2), 12)
+}
+
+func TestInterp_ManyPhisUseOneSnapshot(t *testing.T) {
+	const src = `
+func Rotate9(n int) int {
+	a, b, c, d, e, f, g, h, j := 1, 2, 3, 4, 5, 6, 7, 8, 9
+	for k := 0; k < n; k++ {
+		a, b, c, d, e, f, g, h, j = b, c, d, e, f, g, h, j, a
+	}
+	return a*100000000 + b*10000000 + c*1000000 + d*100000 +
+		e*10000 + f*1000 + g*100 + h*10 + j
+}`
+	expectInt(t, runProgram(t, src, "Rotate9", 1), 234567891)
+}
+
+func TestInterp_AllocInLoopProducesFreshAddress(t *testing.T) {
+	const src = `
+func FreshAlloc() int {
+	ps := make([]*int, 3)
+	for i := 0; i < 3; i++ { x := i + 1; ps[i] = &x }
+	*ps[0] = 9
+	return *ps[1]*10 + *ps[2]
+}`
+	expectInt(t, runProgram(t, src, "FreshAlloc"), 23)
+}
+
+func TestInterp_UnifiedPlanPreservesMixedOperationOrder(t *testing.T) {
+	const src = `
+func Mixed(n int) int {
+	s := make([]int, 2)
+	x := n + 1
+	s[0] = x
+	wide := int64(s[0])
+	s[1] = int(wide) + 2
+	return s[0]*10 + s[1]
+}`
+	expectInt(t, runProgram(t, src, "Mixed", 3), 46)
+}
+
+func TestInterp_IndexAddrEscapesToCallee(t *testing.T) {
+	const src = `
+func bump(p *int) { *p = *p + 1 }
+func EscapingIndexAddr() int {
+	s := make([]int, 1)
+	s[0] = 41
+	bump(&s[0])
+	return s[0]
+}`
+	expectInt(t, runProgram(t, src, "EscapingIndexAddr"), 42)
+}
+```
+
+- [ ] **Step 3: Run the new behavior tests**
+
+```bash
+go test ./internal/interp -run 'TestInterp_(PhisUsePredecessorSnapshot|ManyPhisUseOneSnapshot|AllocInLoopProducesFreshAddress|UnifiedPlanPreservesMixedOperationOrder|IndexAddrEscapesToCallee)' -count=1
+```
+
+Expected: PASS on the existing implementation. These tests freeze behavior that the structural refactor must preserve.
+
+- [ ] **Step 4: Commit the tests and recorded baseline**
+
+```bash
+git add internal/interp/fuse_test.go internal/interp/interp_test.go docs/PERFORMANCE_OPTIMIZATION_2026-06_CN.md
+git commit -m "test(interp): define readable execution model"
+```
+
+### Task 2: Introduce the canonical cell layout
+
+**Files:**
+- Create: `internal/interp/plan.go`
+- Modify: `internal/interp/frame.go`
+- Modify: `internal/interp/interp.go`
+- Test: `internal/interp/fuse_test.go`
+
+**Interfaces:**
+- Consumes: `ssa.Value`, `Cell`, `value.Value`, `program.layouts`.
+- Produces: `frameLayout.values []ssa.Value`, `frameLayout.index map[ssa.Value]int`, `frame.cellStorage []Cell`, and `frame.cells map[ssa.Value]*Cell`.
+
+- [ ] **Step 1: Write and run the failing canonical-cell test**
+
+Replace `TestTypedFastSlotMaterializesBeforeGenericRead` in `internal/interp/fuse_test.go` with:
 
 ```go
 func TestFrameUsesOneCanonicalCellPerSSAValue(t *testing.T) {
@@ -76,93 +169,11 @@ func TestFrameUsesOneCanonicalCellPerSSAValue(t *testing.T) {
 	if got.Int() != 42 { t.Fatalf("readValue = %d, want 42", got.Int()) }
 	if fr.cells[param] != cell { t.Fatal("cell lookup did not preserve identity") }
 }
-
-func TestFrameLayoutBuildsOneOrderedIntLoopPlan(t *testing.T) {
-	const src = `func Sum() int { s := 0; for i := 1; i <= 1000; i++ { s += i }; return s }`
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil { t.Fatalf("Build: %v", err) }
-	fn := unit.Package().Func("Sum")
-	layout := (&program{}).frameLayout(fn)
-	var sawPhi, sawInt, sawIf, sawJump bool
-	for _, block := range layout.blocks {
-		if len(block.phis) != 0 { sawPhi = true }
-		for _, op := range block.ops {
-			switch op.kind {
-			case planIntBinOp: sawInt = true
-			case planIf: sawIf = true
-			case planJump: sawJump = true
-			}
-		}
-	}
-	if !sawPhi || !sawInt || !sawIf || !sawJump {
-		t.Fatalf("plan shapes phi=%v int=%v if=%v jump=%v", sawPhi, sawInt, sawIf, sawJump)
-	}
-}
-
-func TestFrameLayoutCombinesSafeIndexAddrPairs(t *testing.T) {
-	const src = `func Touch() int { s := make([]int, 2); s[0] = 7; return s[0] }`
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil { t.Fatalf("Build: %v", err) }
-	layout := (&program{}).frameLayout(unit.Package().Func("Touch"))
-	var loads, stores int
-	for _, block := range layout.blocks {
-		for _, op := range block.ops {
-			switch op.kind {
-			case planIntIndexLoad: loads++
-			case planIntIndexStore: stores++
-			}
-		}
-	}
-	if loads == 0 || stores == 0 { t.Fatalf("planned loads=%d stores=%d", loads, stores) }
-}
 ```
 
-- [ ] **Step 3: Add a simultaneous-Phi behavioral regression**
+Run `go test ./internal/interp -run TestFrameUsesOneCanonicalCellPerSSAValue -count=1`. Expected RED: the current slotted parameter is not present in `fr.cells` as the canonical cell.
 
-Add to `internal/interp/interp_test.go`:
-
-```go
-func TestInterp_PhiAssignmentsAreSimultaneous(t *testing.T) {
-	const src = `
-func Rotate(n int) int {
-	a, b := 1, 2
-	for i := 0; i < n; i++ { a, b = b, a+b }
-	return a*1000 + b
-}`
-	expectInt(t, runProgram(t, src, "Rotate", 8), 55089)
-}
-```
-
-- [ ] **Step 4: Run target tests and confirm they fail structurally**
-
-```bash
-go test ./internal/interp -run 'TestFrameUsesOneCanonicalCell|TestFrameLayoutBuildsOneOrdered|TestFrameLayoutCombinesSafe|TestInterp_PhiAssignments' -count=1
-```
-
-Expected: the behavioral Phi test passes, while target-architecture tests fail to compile because `layout.blocks` and `plan*` kinds do not exist yet.
-
-- [ ] **Step 5: Commit the tests and recorded baseline**
-
-```bash
-git add internal/interp/fuse_test.go internal/interp/interp_test.go docs/PERFORMANCE_OPTIMIZATION_2026-06_CN.md
-git commit -m "test(interp): define readable execution model"
-```
-
-### Task 2: Introduce the canonical cell layout
-
-**Files:**
-- Create: `internal/interp/plan.go`
-- Modify: `internal/interp/frame.go`
-- Modify: `internal/interp/interp.go`
-- Test: `internal/interp/fuse_test.go`
-
-**Interfaces:**
-- Consumes: `ssa.Value`, `Cell`, `value.Value`, `program.layouts`.
-- Produces: `frameLayout.values []ssa.Value`, `frameLayout.index map[ssa.Value]int`, `frame.cellStorage []Cell`, and `frame.cells map[ssa.Value]*Cell`.
-
-- [ ] **Step 1: Define stable-value collection in `plan.go`**
+- [ ] **Step 2: Define stable-value collection in `plan.go`**
 
 ```go
 type frameLayout struct {
@@ -192,7 +203,7 @@ func collectFrameValues(fn *ssa.Function) ([]ssa.Value, map[ssa.Value]int) {
 }
 ```
 
-- [ ] **Step 2: Replace the frame's dual stores with canonical cells**
+- [ ] **Step 3: Replace the frame's dual stores with canonical cells**
 
 Use `cellStorage []Cell` plus `cells map[ssa.Value]*Cell`. Build the map once with pointers into `cellStorage`:
 
@@ -218,7 +229,7 @@ func (fr *frame) setCell(v ssa.Value, val value.Value) {
 func (fr *frame) bindCell(v ssa.Value, val value.Value) { fr.setCell(v, val) }
 ```
 
-- [ ] **Step 3: Remove the typed cache from `Cell`**
+- [ ] **Step 4: Remove the typed cache from `Cell`**
 
 ```go
 type Cell struct {
@@ -230,7 +241,7 @@ type Cell struct {
 
 Delete `setSlotValue`, `materializeSlot`, and every `fastDirty` synchronization call.
 
-- [ ] **Step 4: Run canonical-store tests**
+- [ ] **Step 5: Run canonical-store tests**
 
 ```bash
 go test ./internal/interp -run 'TestFrameUsesOneCanonicalCell|TestInterp_(AddInts|ForLoop|FibRecursive)' -count=1
@@ -238,7 +249,7 @@ go test ./internal/interp -run 'TestFrameUsesOneCanonicalCell|TestInterp_(AddInt
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the canonical store**
+- [ ] **Step 6: Commit the canonical store**
 
 ```bash
 git add internal/interp/plan.go internal/interp/frame.go internal/interp/interp.go internal/interp/fuse_test.go
@@ -257,7 +268,36 @@ git commit -m "refactor(interp): use one canonical cell store"
 - Consumes: `frameLayout.index`, `visitInstr`, `continuation`, `ssa.BasicBlock`.
 - Produces: `blockPlan{phis []phiPlan, ops []plannedOp}`, `runPlannedOp`, and `runBlockPhis`.
 
-- [ ] **Step 1: Define unified plan descriptors**
+- [ ] **Step 1: Write and run the failing unified-plan test**
+
+Replace `TestFrameLayoutCachesFastIntLoopPlan` in `internal/interp/fuse_test.go` with the following test, then run it and confirm RED because the current layout exposes parallel `fastPhis`, `fastInstrs`, and `fastBlockOps` instead of `blocks`:
+
+```go
+func TestFrameLayoutBuildsOneOrderedIntLoopPlan(t *testing.T) {
+	const src = `func Sum() int { s := 0; for i := 1; i <= 1000; i++ { s += i }; return s }`
+	ctx := context.Background()
+	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
+	if err != nil { t.Fatalf("Build: %v", err) }
+	fn := unit.Package().Func("Sum")
+	layout := (&program{}).frameLayout(fn)
+	var sawPhi, sawInt, sawIf, sawJump bool
+	for _, block := range layout.blocks {
+		if len(block.phis) != 0 { sawPhi = true }
+		for _, op := range block.ops {
+			switch op.kind {
+			case planIntBinOp: sawInt = true
+			case planIf: sawIf = true
+			case planJump: sawJump = true
+			}
+		}
+	}
+	if !sawPhi || !sawInt || !sawIf || !sawJump {
+		t.Fatalf("plan shapes phi=%v int=%v if=%v jump=%v", sawPhi, sawInt, sawIf, sawJump)
+	}
+}
+```
+
+- [ ] **Step 2: Define unified plan descriptors**
 
 ```go
 type planKind uint8
@@ -286,19 +326,19 @@ type blockPlan struct { phis []phiPlan; ops []plannedOp }
 
 Use `-1` as the missing-cell sentinel and initialize every descriptor explicitly.
 
-- [ ] **Step 2: Compile every block into one ordered list**
+- [ ] **Step 3: Compile every block into one ordered list**
 
 `compileBlockPlan` collects leading Phis, skips `DebugRef`, combines a safe adjacent `IndexAddr` pair, emits optimized int BinOp/If/Jump operations when operands are resolvable, and otherwise emits `planGeneric`. It must preserve instruction order exactly.
 
-- [ ] **Step 3: Implement one type-agnostic Phi resolver**
+- [ ] **Step 4: Implement one type-agnostic Phi resolver**
 
 Select the predecessor once, stage all source `value.Value`s, then commit all destinations. Use an eight-element stack buffer and allocate only for larger Phi groups. Non-cell operands call `readValue`.
 
-- [ ] **Step 4: Replace `runFrame` with one plan loop**
+- [ ] **Step 5: Replace `runFrame` with one plan loop**
 
 The outer loop resolves Phis once and walks `blockPlan.ops`. `runPlannedOp` writes `value.MakeInt` or `value.MakeBool` directly to canonical cells; `planGeneric` calls `visitInstr`. Handle `contNext`, `contJump`, and `contReturn` once in `runFrame`.
 
-- [ ] **Step 5: Delete `fast_plan.go` and run focused tests**
+- [ ] **Step 6: Delete `fast_plan.go` and run focused tests**
 
 ```bash
 go test ./internal/interp -run 'TestFrameLayoutBuildsOneOrdered|TestInterp_(PhiAssignmentsAreSimultaneous|ForLoop|NestedLoops|FibRecursive)' -count=1
@@ -306,7 +346,7 @@ go test ./internal/interp -run 'TestFrameLayoutBuildsOneOrdered|TestInterp_(PhiA
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the unified plan**
+- [ ] **Step 7: Commit the unified plan**
 
 ```bash
 git add internal/interp/plan.go internal/interp/frame.go internal/interp/fuse_test.go internal/interp/fast_plan.go
@@ -326,19 +366,45 @@ git commit -m "refactor(interp): execute one ordered block plan"
 - Consumes: `fusableIndexAddrConsumer`, native `Value.IntSlice`, generic `runIndexAddr`, `runStore`, and `runUnOp`.
 - Produces: `planIntIndexLoad` and `planIntIndexStore` in the same operation loop, with generic pair fallback.
 
-- [ ] **Step 1: Implement native planned load/store**
+- [ ] **Step 1: Write and run the failing planned-index test**
+
+Replace `TestFrameLayoutCachesFusableIndexAddrConsumers` in `internal/interp/fuse_test.go` with:
+
+```go
+func TestFrameLayoutCombinesSafeIndexAddrPairs(t *testing.T) {
+	const src = `func Touch() int { s := make([]int, 2); s[0] = 7; return s[0] }`
+	ctx := context.Background()
+	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
+	if err != nil { t.Fatalf("Build: %v", err) }
+	layout := (&program{}).frameLayout(unit.Package().Func("Touch"))
+	var loads, stores int
+	for _, block := range layout.blocks {
+		for _, op := range block.ops {
+			switch op.kind {
+			case planIntIndexLoad: loads++
+			case planIntIndexStore: stores++
+			}
+		}
+	}
+	if loads == 0 || stores == 0 { t.Fatalf("planned loads=%d stores=%d", loads, stores) }
+}
+```
+
+Run `go test ./internal/interp -run TestFrameLayoutCombinesSafeIndexAddrPairs -count=1`. Expected RED because Task 3's planner has not yet combined indexed pairs.
+
+- [ ] **Step 2: Implement native planned load/store**
 
 Read the slice, index, and stored value from canonical cells or constants. For native `[]int`, perform the access and write a load result with `value.MakeInt`. Return `handled=false` when `IntSlice()` does not match.
 
-- [ ] **Step 2: Implement generic pair fallback**
+- [ ] **Step 3: Implement generic pair fallback**
 
 When the native shape does not match, invoke `visitInstr` for the original `IndexAddr` and then its consumer. Preserve errors and continuation signals from either instruction.
 
-- [ ] **Step 3: Delete the address side channel**
+- [ ] **Step 4: Delete the address side channel**
 
 Remove `addrRef`, `setReflectAddrRef`, `setIntSliceAddrRef`, `frame.addrRefs`, and `fr.addrRef` branches in Store and UnOp. Generic `runIndexAddr` materializes an ordinary reflect pointer for patterns not combined by the plan.
 
-- [ ] **Step 4: Run indexed-access and allocation tests**
+- [ ] **Step 5: Run indexed-access and allocation tests**
 
 ```bash
 go test ./internal/interp -run 'Test(FusableIndexAddrConsumer|FrameLayoutCombinesSafeIndexAddrPairs|RunSliceFromMakeSliceArray|InterpIntSliceLoopAllocations)' -count=1
@@ -346,7 +412,7 @@ go test ./internal/interp -run 'Test(FusableIndexAddrConsumer|FrameLayoutCombine
 
 Expected: PASS and BubbleSort allocations remain below the existing 500-allocation guard.
 
-- [ ] **Step 5: Commit indexed-plan simplification**
+- [ ] **Step 6: Commit indexed-plan simplification**
 
 ```bash
 git add internal/interp/plan.go internal/interp/composite.go internal/interp/ops.go internal/interp/fuse_test.go internal/interp/perf_test.go

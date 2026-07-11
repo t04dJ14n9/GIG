@@ -54,19 +54,29 @@ flowchart TB
     subgraph Host["host + importer + gentool"]
         Registry["importer.Registry<br/>ExternalObject map"]
         Env["host.Environment"]
-        Lookup["lookupObject<br/>普通对象一次解析"]
+        Lookup["lookupObject<br/>function ExternalObject"]
         Gen["cmd/gig/gentool<br/>packages/*.go"]
-        Resolved["callResolvedHostFunc/Method<br/>direct handled/declined/error"]
-        Fallback["reflect.Value.Call fallback"]
+        FuncResolved["callResolvedHostFunc<br/>direct handled/declined/error"]
+        MethodCache["lookupHostMethod<br/>(reflect.Type, method) cache"]
+        MethodEnv["Environment.LookupMethod"]
+        MethodDirect["LookupMethodDirectCall"]
+        MethodResolved["callResolvedHostMethod<br/>direct handled/declined/error"]
+        Fallback["generic/final fallback<br/>Function.Call / Method.Call / MethodByName"]
         Gen --> Registry --> Env
-        Env --> Lookup --> Resolved
+        Env --> Lookup --> FuncResolved
+        MethodCache --> MethodEnv --> MethodDirect --> MethodResolved
+        Registry --> MethodDirect
         Env --> Fallback
+        FuncResolved --> Fallback
+        MethodResolved --> Fallback
     end
 
     SSA --> Program
     Loop --> Tagged
     Loop --> Env
-    Resolved --> Tagged
+    Loop --> MethodCache
+    FuncResolved --> Tagged
+    MethodResolved --> Tagged
     Fallback --> Tagged
 ```
 
@@ -260,7 +270,8 @@ recover 任何向上传播的 panic（转成 error），然后交给 `callSSA`�
    当前/前驱基本块、canonical `cellStorage`、指向同一批 cell 的 `cells`
    身份索引（`ssa.Value → *Cell`）、闭包的自由变量 cell 列表。
 4. 绑定形参与自由变量。
-5. 给每个 `*ssa.Local` 预分配 `Cell`，让 `Store`/`UnOp(MUL)` 可以取地址。
+5. 用新建的可寻址 `reflect.Value` 初始化每个 local 已经存在的 canonical
+   `Cell`，让 `Store`/`UnOp(MUL)` 可以取地址。
 6. 安装 panic 处理器（见 §8）。
 7. `runFrame(caller, fr, depth)` —— 调度循环。
 
@@ -434,10 +445,10 @@ receiver 和普通参数分开传入。
 
 对普通 `importer.Registry` 包，`registryBridge.lookupObject` 一次解析 package
 及其带 kind 的 `ExternalObject`；函数值、名称、类型元数据和可选 `DirectCall`
-来自同一个对象，variable/constant/type adapter 也复用这一 helper。公共
-`PackageRegistry` 接口没有变化。若对象查找失败，function、variable、type
-lookup 才使用旧的 typed-interface fallback，以兼容自定义
-`PackageRegistry`；普通已注册对象命中 `lookupObject` 后不会进入这个兼容分支。
+来自同一个对象，variable/constant/type adapter 也复用这一 helper。若命中
+预期 kind 且能构造所需 adapter，该次 lookup 直接返回，不会重开 registry。
+若对象缺失或无法构造 adapter，function、variable、type lookup 仍可能使用旧的
+typed fallback；这些分支用于兼容自定义 `PackageRegistry`。公共接口没有变化。
 
 ### 函数分发
 
@@ -477,6 +488,12 @@ selection 不再拥有并行的 caller-side 路径。
 `invokeMethodOn` 在 `host_call.go` 中，被三个调用点共用：SSA `Call` 且
 `Common.IsInvoke()`、`callHostFunc` 中带 receiver 的函数、defer 记录
 中捕获了 interface 方法 receiver 的情况（见 §8）。
+
+已注册的 method wrapper **不经过** `ExternalObject`。`lookupHostMethod` 先检查
+`(reflect.Type, method)` cache；miss 时推导 value/pointer type key，并调用
+`Environment.LookupMethod`。`registryBridge.LookupMethod` 再通过
+`PackageRegistry.LookupMethodDirectCall` 取得 wrapper；成功构造的
+`host.Method` 会先缓存，再由 `callResolvedHostMethod` 调用。
 
 步骤：
 
@@ -720,7 +737,7 @@ internal/interp/plan.go                 cached layout、Phi group、有序 block
 internal/interp/ops.go                  generic 指令与 call 分发
 internal/interp/arith.go                BinOp、UnOp、标量转换
 internal/interp/composite.go            Field、Slice、Map、Range、MakeInterface
-internal/interp/closure.go              基于 reflect.MakeFunc 的 MakeClosure
+internal/interp/closure.go              interpretedFunc；reflect.MakeFunc 仅用于 ReflectValue 宿主 fallback
 internal/interp/defer_panic.go          defer 记录、RunDefers、recover
 internal/interp/goroutine.go            Go、Send、Select
 internal/interp/type_assert.go          TypeAssert、Panic

@@ -54,9 +54,13 @@ flowchart TB
     subgraph HostBridge["宿主调用桥"]
         Env["host.Environment<br/>types.Importer + LookupFunc/Var/Type/Method"]
         Registry["importer.Registry<br/>ExternalObject 显式包注册表"]
-        ObjectLookup["lookupObject<br/>普通对象一次解析"]
-        Resolved["callResolvedHostFunc/Method<br/>direct handled/declined/error"]
-        ReflectCall["reflect fallback<br/>Function.Call / MethodByName"]
+        ObjectLookup["lookupObject<br/>function ExternalObject"]
+        FuncResolved["callResolvedHostFunc<br/>direct handled/declined/error"]
+        MethodCache["lookupHostMethod<br/>(reflect.Type, method) cache"]
+        MethodEnv["Environment.LookupMethod"]
+        MethodDirect["LookupMethodDirectCall"]
+        MethodResolved["callResolvedHostMethod<br/>direct handled/declined/error"]
+        ReflectCall["generic/final fallback<br/>Function.Call / Method.Call / MethodByName"]
         Pack["packResults<br/>0/1/N 返回值统一写回 SSA cell"]
     end
 
@@ -92,10 +96,14 @@ flowchart TB
     Registry --> Env
 
     OpsInterp --> Env
-    Env --> ObjectLookup --> Resolved
-    Env --> ReflectCall
-    Resolved --> ReflectCall
-    Resolved --> Pack
+    Env --> ObjectLookup --> FuncResolved
+    OpsInterp --> MethodCache --> MethodEnv --> MethodDirect --> MethodResolved
+    Registry --> MethodDirect
+    OpsInterp --> ReflectCall
+    FuncResolved --> ReflectCall
+    MethodResolved --> ReflectCall
+    FuncResolved --> Pack
+    MethodResolved --> Pack
     ReflectCall --> Pack
     Pack --> Value
 
@@ -114,8 +122,7 @@ sequenceDiagram
     participant SSA as go/ssa
     participant I as SSA Interpreter
     participant H as Host Bridge
-    participant G as Generated Wrappers
-    participant Go as 原生 Go 函数
+    participant R as importer.Registry
 
     User->>Gig: Build(source)
     Gig->>FE: parse + safety + auto import + typecheck
@@ -126,18 +133,28 @@ sequenceDiagram
     User->>Gig: Run(funcName, args...)
     Gig->>I: []value.Value
     I->>I: callSSA -> cached layout -> Phi group + ordered operations
-    I->>H: body-less ssa.Function / host method
-    H->>H: lookupObject 一次 -> resolved adapter
-    alt DirectCall handled
-        H->>G: wrapper 调用
-        G->>Go: 普通 Go 函数直接调用
-        Go-->>G: Go 返回值
-        G-->>H: []value.Value
-    else DirectCall 缺失或 declined
-        H->>Go: Function.Call / Method.Call / MethodByName
-        Go-->>H: 返回值
+    alt package function
+        I->>H: LookupFunc
+        H->>R: lookupObject -> Objects[name]
+        R-->>H: constructible ExternalObject
+        H-->>I: host.Function
+        I->>I: callResolvedHostFunc (direct/Function.Call) -> []value.Value
+    else host method
+        I->>I: lookupHostMethod cache
+        opt cache miss
+            I->>H: Environment.LookupMethod(typeKey, method)
+            H->>R: LookupMethodDirectCall
+            R-->>H: method wrapper or miss
+            H-->>I: host.Method or miss
+            I->>I: cache resolved method/miss
+        end
+        alt registered wrapper resolved
+            I->>I: callResolvedHostMethod (direct/Method.Call) -> []value.Value
+        else wrapper miss
+            I->>I: interpreted method / MethodByName -> []value.Value
+        end
     end
-    H-->>I: packResults 一次写回 SSA cell
+    I->>I: runCall -> packResults 一次写回 SSA cell
     I-->>Gig: value.Value
     Gig-->>User: any / error
 ```
@@ -150,7 +167,7 @@ sequenceDiagram
 
 3. **在同一执行模型里分层，而不是维护平行引擎。** 每个 SSA value 只有一个 canonical `Cell.Value`；`cells` map 指向同一段 `cellStorage` backing array。每个 block 只有一条有序 operation list：通用 entry 走 `visitInstr`，plain `int`/`bool` 与可证明安全的相邻 plain `[]int` load/store pair 才使用可选 plan kind。Phi 在块入口通用地先暂存再提交，命名 slice、逃逸地址和其它形态继续走 reflect fallback。
 
-4. **一次解析、单一路径的生成式宿主桥。** `registryBridge.lookupObject` 从普通 registry 的一个 `ExternalObject` 同时取得值、kind、类型元数据和可选 DirectCall；只有自定义 `PackageRegistry` 对象查找失败时才保留旧 typed fallback。`callResolvedHostFunc` / `callResolvedHostMethod` 在同一入口处理 direct handled/declined/error 与 generic call，`runCall` 对每次宿主调用只读一次参数并只打包一次结果。`gentool` 生成的 wrapper 继续支持 0/1/N 返回值和 variadic 拆包。
+4. **一次解析、单一路径的生成式宿主桥。** Package function/variable/constant/type 通过 `registryBridge.lookupObject` 从一个 `ExternalObject` 取得值、kind、类型元数据和可选 DirectCall；命中预期 kind 且能构造 adapter 时无需重开 registry，否则 function/variable/type 的 typed fallback 继续兼容自定义 `PackageRegistry`。Method wrapper 走独立的 `lookupHostMethod` cache → `Environment.LookupMethod` → `LookupMethodDirectCall` 流程，不使用 `ExternalObject`。`callResolvedHostFunc` 与 `callResolvedHostMethod` 各自在单一入口处理 direct handled/declined/error 和 generic call；`runCall` 只读一次参数并只打包一次结果。
 
 5. **宿主接口边界前置治理。** 对“解释期 struct 传给宿主非空 interface”这种需要动态合成 Go 类型的高风险场景，Gig 在前端用 G_iface_ban 给出确定性错误，而不是运行期隐式失败或不完整模拟。
 

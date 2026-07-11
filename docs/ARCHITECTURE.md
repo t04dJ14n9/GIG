@@ -221,8 +221,8 @@ error), and hands off to `callSSA`.
    `cells` identity index (`ssa.Value → *Cell`), and free-variable cells for
    closures.
 4. Bind parameters and free variables.
-5. Pre-allocate `Cell`s for every `*ssa.Local` so `Store`/`UnOp(MUL)` can
-   address them.
+5. Initialize each local's already-existing canonical `Cell` with a fresh
+   addressable reflect value so `Store`/`UnOp(MUL)` can address it.
 6. Install the panic handler (see §8).
 7. `runFrame(caller, fr, depth)` — the dispatch loop.
 
@@ -415,12 +415,12 @@ the wrapper receives the receiver separately from normal args.
 For ordinary `importer.Registry` packages, `registryBridge.lookupObject`
 resolves the package and its typed `ExternalObject` once. Function value,
 kind, name, type metadata, and optional `DirectCall` therefore come from one
-source; variable, constant, and type adapters use the same helper. The public
-`PackageRegistry` interface is unchanged. If an object lookup misses, the
-function, variable, and type lookups retain their legacy typed-interface
-fallback for custom `PackageRegistry` implementations. An ordinary registered
-object hit completes through `lookupObject` and never enters that compatibility
-branch.
+source; variable, constant, and type adapters use the same helper. When an
+expected-kind object can construct the requested adapter, that lookup returns
+without reopening the registry. If the object is missing or cannot construct
+the adapter, function, variable, and type lookups may use their legacy typed
+fallbacks; those branches preserve custom `PackageRegistry` implementations.
+The public interface is unchanged.
 
 ### Function dispatch
 
@@ -462,6 +462,13 @@ Variadic handling has three shapes (see `reflectFunc.Call` in
 `Call` with `Common.IsInvoke()`, `callHostFunc` for receiver-typed
 functions, and `defer` records that captured an interface-method receiver
 (see §8).
+
+Registered method wrappers do **not** come from `ExternalObject`.
+`lookupHostMethod` first checks the `(reflect.Type, method)` cache, derives
+value/pointer type keys on a miss, and calls `Environment.LookupMethod`.
+`registryBridge.LookupMethod` then asks `PackageRegistry.LookupMethodDirectCall`
+for the wrapper; a successful `host.Method` is cached before
+`callResolvedHostMethod` invokes it.
 
 Steps:
 
@@ -729,7 +736,7 @@ internal/interp/plan.go                 cached layout, Phi group, ordered block 
 internal/interp/ops.go                  generic instruction and call dispatch
 internal/interp/arith.go                BinOp, UnOp, scalar conversion
 internal/interp/composite.go            Field, Slice, Map, Range, MakeInterface
-internal/interp/closure.go              MakeClosure via reflect.MakeFunc
+internal/interp/closure.go              interpretedFunc; reflect.MakeFunc only for ReflectValue host fallback
 internal/interp/defer_panic.go          Defer records, RunDefers, recover
 internal/interp/goroutine.go            Go, Send, Select
 internal/interp/type_assert.go          TypeAssert, Panic

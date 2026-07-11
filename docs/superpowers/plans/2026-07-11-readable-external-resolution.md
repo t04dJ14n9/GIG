@@ -176,13 +176,72 @@ git commit -m "refactor(host): resolve external objects once"
 - Modify: `internal/interp/host_call.go`
 - Modify: `internal/interp/ops.go`
 - Modify: `internal/interp/closure.go`
-- Test: `internal/interp/host_call_test.go`
+- Create: `internal/interp/host_call_test.go`
 
 **Interfaces:**
 - Consumes: `lookupHostFunc`, `host.DirectFunction`, `host.Function.Call`, `packResults`.
 - Produces: one `callHostFunc(ctx context.Context, fn *ssa.Function, args []value.Value) ([]value.Value, error)`.
 
-- [ ] **Step 1: Add a helper that invokes a resolved function once**
+- [ ] **Step 1: Write and run the failing resolved-function test**
+
+Create `internal/interp/host_call_test.go` with a real host adapter double that implements the complete interfaces and records which real call method was selected:
+
+```go
+type recordingHostFunction struct {
+	calls int
+	result value.Value
+}
+
+func (f *recordingHostFunction) Name() string { return "recording" }
+func (f *recordingHostFunction) Signature() *types.Signature { return nil }
+func (f *recordingHostFunction) Call([]value.Value) ([]value.Value, error) {
+	f.calls++
+	return []value.Value{f.result}, nil
+}
+
+type recordingDirectFunction struct {
+	*recordingHostFunction
+	directCalls int
+	handled bool
+	directResult value.Value
+}
+
+func (f *recordingDirectFunction) CallDirect([]value.Value) ([]value.Value, bool, error) {
+	f.directCalls++
+	return []value.Value{f.directResult}, f.handled, nil
+}
+
+func TestCallResolvedHostFuncSelectsOnePath(t *testing.T) {
+	t.Run("direct handled", func(t *testing.T) {
+		fn := &recordingDirectFunction{
+			recordingHostFunction: &recordingHostFunction{result: value.MakeInt(9)},
+			handled: true,
+			directResult: value.MakeInt(7),
+		}
+		got, err := callResolvedHostFunc(fn, nil)
+		if err != nil { t.Fatalf("callResolvedHostFunc: %v", err) }
+		if got[0].Int() != 7 || fn.directCalls != 1 || fn.calls != 0 {
+			t.Fatalf("result=%v direct=%d generic=%d", got, fn.directCalls, fn.calls)
+		}
+	})
+	t.Run("direct declined", func(t *testing.T) {
+		fn := &recordingDirectFunction{
+			recordingHostFunction: &recordingHostFunction{result: value.MakeInt(9)},
+			handled: false,
+			directResult: value.MakeInt(7),
+		}
+		got, err := callResolvedHostFunc(fn, nil)
+		if err != nil { t.Fatalf("callResolvedHostFunc: %v", err) }
+		if got[0].Int() != 9 || fn.directCalls != 1 || fn.calls != 1 {
+			t.Fatalf("result=%v direct=%d generic=%d", got, fn.directCalls, fn.calls)
+		}
+	})
+}
+```
+
+Run `go test ./internal/interp -run TestCallResolvedHostFuncSelectsOnePath -count=1`. Expected RED because `callResolvedHostFunc` does not exist.
+
+- [ ] **Step 2: Add a helper that invokes a resolved function once**
 
 ```go
 func callResolvedHostFunc(fn host.Function, args []value.Value) ([]value.Value, error) {
@@ -194,15 +253,15 @@ func callResolvedHostFunc(fn host.Function, args []value.Value) ([]value.Value, 
 }
 ```
 
-- [ ] **Step 2: Fold direct dispatch into `callHostFunc`**
+- [ ] **Step 3: Fold direct dispatch into `callHostFunc`**
 
 Resolve the package path once, route receiver-bearing SSA functions to `invokeMethodOn`, resolve/cache a free function once, and call `callResolvedHostFunc`. Preserve the legacy receiver fallback only when function lookup misses.
 
-- [ ] **Step 3: Delete `callHostFuncDirect`**
+- [ ] **Step 4: Delete `callHostFuncDirect`**
 
 In `runCall`, remove the direct-first branch. Call `callHostFunc` once and call `packResults` once. `interpretedFunc.CallContext` continues to use the same `callHostFunc` for body-less functions.
 
-- [ ] **Step 4: Run direct and reflect function tests**
+- [ ] **Step 5: Run direct and reflect function tests**
 
 ```bash
 go test ./host ./internal/interp ./tests -run 'DirectCall|External|Host|Closure' -count=1
@@ -210,7 +269,7 @@ go test ./host ./internal/interp ./tests -run 'DirectCall|External|Host|Closure'
 
 Expected: PASS and DirectCall tests prove the reflect body remains bypassed.
 
-- [ ] **Step 5: Commit unified function invocation**
+- [ ] **Step 6: Commit unified function invocation**
 
 ```bash
 git add internal/interp/host_call.go internal/interp/ops.go internal/interp/closure.go internal/interp/host_call_test.go

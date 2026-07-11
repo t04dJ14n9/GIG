@@ -11,8 +11,9 @@ AST       诊断信息       类型信息       SSA          运行时值
 ```
 
 解释器是树遍历式的 SSA 执行器 —— 没有自定义中间表示，没有字节码，也没有 JIT。
-所有值在与宿主交互的边界都通过 `reflect.Value` 流转；解释器内部的大多数
-原始值则在 32 字节的 tagged-union 中以非装箱形式存放。
+通用宿主边界通过 `reflect.Value` 流转，生成的 direct wrapper 则继续使用
+解释器侧的值；解释器内部的大多数原始值在 32 字节的 tagged-union 中以
+非装箱形式存放。
 
 唯一的外部依赖是用于 SSA 构造的 `golang.org/x/tools`，其余 (解析、类型检查)
 都来自 Go 标准库。
@@ -36,11 +37,12 @@ flowchart TB
 
     subgraph Runtime["internal/interp"]
         Program["program<br/>ssaPkg/env/resolver/caches"]
-        Frame["frame<br/>block/prevBlock/slots/cells"]
-        Loop["runFrame<br/>Phi -> fast block -> visitInstr"]
-        Fast["fast_plan<br/>typed int/bool / IndexAddr fusion"]
-        Program --> Frame --> Loop
-        Loop --> Fast
+        Layout["cached frameLayout<br/>cell index + one blockPlan/block"]
+        Frame["frame<br/>block/prevBlock + cellStorage + cells pointers"]
+        Loop["runFrame<br/>generic Phi group -> ordered operations"]
+        Planned["optional plan kinds<br/>plain int/bool + safe plain []int pairs"]
+        Program --> Layout --> Frame --> Loop
+        Loop --> Planned
     end
 
     subgraph Values["value"]
@@ -50,20 +52,21 @@ flowchart TB
     end
 
     subgraph Host["host + importer + gentool"]
-        Registry["importer.Registry"]
+        Registry["importer.Registry<br/>ExternalObject map"]
         Env["host.Environment"]
+        Lookup["lookupObject<br/>普通对象一次解析"]
         Gen["cmd/gig/gentool<br/>packages/*.go"]
-        Direct["DirectFunction/DirectMethod"]
+        Resolved["callResolvedHostFunc/Method<br/>direct handled/declined/error"]
         Fallback["reflect.Value.Call fallback"]
         Gen --> Registry --> Env
-        Env --> Direct
+        Env --> Lookup --> Resolved
         Env --> Fallback
     end
 
     SSA --> Program
     Loop --> Tagged
     Loop --> Env
-    Direct --> Tagged
+    Resolved --> Tagged
     Fallback --> Tagged
 ```
 
@@ -233,15 +236,16 @@ reflect 类型走 `obj`。**可变性刻意没有放在 Value 里**：Value 一�
 
 ```go
 type program struct {
-    ssaPkg    *ssa.Package
-    env       host.Environment
-    converter value.Converter
-    resolver  *typeResolver
-    globals   map[*ssa.Global]*Cell
-    maxDepth  int
-    layouts   sync.Map
-    framePools sync.Map
-    panicFrame *frame
+    ssaPkg      *ssa.Package
+    fset        any
+    env         host.Environment
+    converter   value.Converter
+    resolver    *typeResolver
+    globals     map[*ssa.Global]*Cell
+    maxDepth    int
+    hostFuncs   sync.Map
+    hostMethods sync.Map
+    layouts     sync.Map
 }
 ```
 
@@ -252,33 +256,47 @@ recover 任何向上传播的 panic（转成 error），然后交给 `callSSA`�
 
 1. 检查递归深度（上限 `maxDepth`，1024）。
 2. 拒绝没有函数体的 SSA 函数（这些走 `callHostFunc`）。
-3. 构造或复用每次调用的 `frame`：SSA 函数指针、当前/前驱基本块、slot
-   数组、fallback `cells` 表（`ssa.Value → *Cell`）、闭包的自由变量 cell 列表。
+3. 读取缓存的 `frameLayout`，再构造每次调用的 `frame`：SSA 函数指针、
+   当前/前驱基本块、canonical `cellStorage`、指向同一批 cell 的 `cells`
+   身份索引（`ssa.Value → *Cell`）、闭包的自由变量 cell 列表。
 4. 绑定形参与自由变量。
 5. 给每个 `*ssa.Local` 预分配 `Cell`，让 `Store`/`UnOp(MUL)` 可以取地址。
 6. 安装 panic 处理器（见 §8）。
 7. `runFrame(caller, fr, depth)` —— 调度循环。
 
-`runFrame` 按基本块走。每个块：先用 **cell 表的快照** 解析所有 Phi 节点
-（这样并行的 Phi 不会互相观察对方的更新），再依次走剩下的指令。每个
-handler 返回一个 `continuation`：
+`frameLayout` 对每个 `*ssa.Function` 只编译一次并缓存在
+`program.layouts`：它保存确定的 cell index，以及每个 basic block 唯一的
+immutable `blockPlan`。每次调用拥有新的 `cellStorage []Cell`；`cells` map
+只保存指向这段 backing storage 的指针，因此一个 SSA value 只有一个
+canonical `Cell.Value`。没有 slot/fallback 双存储，也没有 typed dirty cache
+或延迟 materialization 协议；不超过 8 个 cell 的小 frame 会把 storage 内联
+到同一次 frame 分配中。
+
+`runFrame` 对每个块只遍历这一份 plan。块入口的 `runBlockPhis` 只选择一次
+predecessor，把所有 Phi source 暂存到 `[]value.Value`（8 项以内使用栈缓冲），
+再统一提交 destination；因此保留同时赋值语义，但不再有类型特化的 Phi
+引擎。随后只遍历一条有序 operation list。每个 operation 返回一个
+`continuation`：
 
 - `contNext` —— 走下一条指令。
 - `contJump` —— handler 改了 `fr.block`（`If`、`Jump`），跳出指令循环
   重新进入外层。
 - `contReturn` —— 函数即将返回，结果元组在返回值里。
 
-为了让可读的 SSA 解释模型接近 Yaegi 性能，`frameLayout` 会在函数首次执行时
-预计算两类运行期计划：
+这条 list 同时容纳普通 `planGeneric` 和少量可选优化 kind：plain `int`
+算术/比较、plain `bool` 分支、jump，以及安全且相邻的 plain `[]int`
+`IndexAddr → load/store` pair。generic entry 直接委托给 `visitInstr`。
+planned index pair 要求 `IndexAddr` 除相邻 consumer（和 debug ref）外没有其它
+referrer；命名 slice 类型保持 generic path。运行时若不是 native `[]int`
+表示，仍顺序执行原始的两条指令。逃逸或无法证明安全的地址正常物化，frame
+中不再维护原来的 `addrRefs` 地址 side channel。
 
-- `slotIndex`：大多数 SSA value 映射到 `[]Cell` slot；`ssa.Alloc` 保持在
-  fallback map 中，避免闭包/取地址语义被复用 slot 破坏。
-- typed fast plan：plain `int`/`bool` 的 Phi、BinOp、If，以及常见
-  `[]int` load/store，运行时直接按 slot/const 访问，跳过 `readValue` 的
-  map lookup。
-
-frame pool 只对不会在函数体内继续创建闭包、且没有复杂 local 地址的函数启用；
-简单闭包体可以复用 frame，但 captured cells 仍来自闭包对象本身。
+这项可读性取舍已用 17 个代表性 workload 的五次中位数衡量：全部低于
+`3.0x` 预算，最慢是 `benchmarks/Fib25`，精确为重构前的 `1.460754x`。
+四项宿主调用为 `0.917x`–`1.025x`。当前 `ExtCallReflect`、
+`ExtCallMethod`、`ExtCallMixed` 会命中注册的 `DirectMethod` wrapper，因此
+这些比率衡量统一 host dispatch，而不是纯 raw-reflection method fallback。
+完整数据见 `PERFORMANCE_OPTIMIZATION_2026-06_CN.md`。
 
 ### 指令处理 —— `ops.go`
 
@@ -297,8 +315,9 @@ frame pool 只对不会在函数体内继续创建闭包、且没有复杂 local
 | 并发 | `Go`、`Send`、`Select` | goroutine.go |
 | 类型 | `TypeAssert` | type_assert.go |
 
-Phi 节点在块入口由 `runBlockPhis` 解析；`visitInstr` 中遇到 Phi 时是
-防御性 no-op。
+Phi 节点被编译成每个 `blockPlan` 的 leading group，并在块入口由
+`runBlockPhis` 解析；`visitInstr` 中遇到 Phi 时是防御性 no-op。优化 operation
+kind 位于 `plan.go`，与 generic handler 读写完全相同的 canonical cells。
 
 ### Cell、可寻址性、reflect 桥接
 
@@ -399,7 +418,7 @@ pkg.AddType("ByteOrder", reflect.TypeOf((*binary.ByteOrder)(nil)).Elem(), "")
 `AddFunction` 接收真正的 `func` 值，也可以额外接收一个
 `func([]value.Value) ([]value.Value, error)` DirectCall wrapper 用于热点路径。没有
 wrapper 的调用仍在运行时通过 `reflect.Call` 分发。`AddVariable` 接收指针，
-所以读经由 `UnOp(MUL)` 加载、写可以 `Set` 到槽位。`AddType` 注册
+所以读经由 `UnOp(MUL)` 加载、写可以 `Set` 到注册的存储。`AddType` 注册
 `reflect.Type` 给类型检查器解析。部分方法可以通过
 `AddMethodDirectCall(type, method, wrapper)` 注册 wrapper；方法 wrapper 会把
 receiver 和普通参数分开传入。
@@ -413,6 +432,13 @@ receiver 和普通参数分开传入。
 - `LookupConst`、`LookupType`、`LookupReflectType` —— 类型解析侧。
 - `AutoImport(name)` —— 自动导入钩子。
 
+对普通 `importer.Registry` 包，`registryBridge.lookupObject` 一次解析 package
+及其带 kind 的 `ExternalObject`；函数值、名称、类型元数据和可选 `DirectCall`
+来自同一个对象，variable/constant/type adapter 也复用这一 helper。公共
+`PackageRegistry` 接口没有变化。若对象查找失败，function、variable、type
+lookup 才使用旧的 typed-interface fallback，以兼容自定义
+`PackageRegistry`；普通已注册对象命中 `lookupObject` 后不会进入这个兼容分支。
+
 ### 函数分发
 
 `callHostFunc` (在 `host_call.go`) 是 SSA 调用没有函数体的 *ssa.Function*
@@ -421,20 +447,22 @@ receiver 和普通参数分开传入。
 1. 从 `fn.Pkg.Pkg.Path()` 拿包路径。
 2. 若 `fn.Signature.Recv() != nil`，是宿主方法 —— 走
    `invokeMethodOn(args[0], fn.Name(), args[1:])`。
-3. 否则查 `LookupFunc(pkg, fn.Name())`。如果返回值实现了
-   `host.DirectFunction`，直接调用 wrapper，得到 `[]value.Value`。
-4. Direct wrapper 的结果通过 `packResults` 写回 SSA cell：0 返回值写 nil，
-   单返回值原样写入，多返回值打包成 tuple holder，供后续 `ssa.Extract` 读取。
-5. 没有 direct wrapper 时，调用 `Function.Call`。
-6. 若查找失败，再尝试一次 `invokeMethodOn` —— 覆盖少数没把方法注册成自由
+3. 否则解析并缓存 `LookupFunc(pkg, fn.Name())`，再把 adapter 交给
+   `callResolvedHostFunc`。
+4. `callResolvedHostFunc` 只尝试一次 `host.DirectFunction.CallDirect`：handled
+   或 error 立即返回；declined 才进入唯一的 generic `Function.Call`。
+5. 若查找失败，再尝试一次 `invokeMethodOn` —— 覆盖少数没把方法注册成自由
    函数的标准库包。
 
 返回的 `host.Function` 是
 `reflectFunc{fn: reflect.ValueOf(rawFn), directCall: wrapper}`。它的
 `CallDirect` 在 wrapper 存在时绕过 `reflect.Value.Call`；wrapper 内部仍可能
-使用 converter/reflect 做参数和返回值转换。慢速 `Call` 通过
+使用 converter/reflect 做参数和返回值转换。generic `Call` 通过
 `Converter.ToReflect` 构造 reflect 形式的实参，经由 `reflect.Value.Call`
 分发（变长且预先打包成 slice 时用 `CallSlice`）。
+对于没有函数体的 SSA call，`runCall` 只读一次参数、调用一次
+`callHostFunc`，再用一次 `packResults` 把 0/1/N 个返回值写回；direct
+selection 不再拥有并行的 caller-side 路径。
 
 变长的处理有三种形态（见 `registry_bridge.go::reflectFunc.Call`）：
 
@@ -454,9 +482,11 @@ receiver 和普通参数分开传入。
 
 1. **解开 interface box。** 若 receiver 是 `KindInterface`，
    `dynRecv = box.Elem()`，让后续路径看到动态 concrete 值。
-2. **优先尝试注册过的宿主 DirectMethod wrapper。** 查找结果按
+2. **先解析已注册的宿主 method adapter。** 查找结果按
    `(reflect.Type, method)` 缓存，所以重复调用宿主方法时不会反复拼接
-   package/type key，也不会反复创建 bridge 对象。
+   package/type key，也不会反复创建 bridge 对象。随后
+   `callResolvedHostMethod` 尝试 `DirectMethod.CallDirect`：handled/error
+   到此结束，declined 才走 adapter 唯一的普通 `Method.Call`。
 3. **尝试解释期方法** —— `lookupInterpretedMethod` 扫
    `ssautil.AllFunctions(prog)`，找一个属于源包、名称匹配、receiver 通过
    `receiverMatches` 的 `*ssa.Function`。
@@ -467,6 +497,10 @@ receiver 和普通参数分开传入。
 5. 若没匹配的解释期方法：构造动态 receiver 的 reflect.Value，先试
    `MethodByName`，再试 `Addr().MethodByName`，再试 `Elem().MethodByName`。
    通过 `Converter.ToReflect` 打包参数，调用，解包返回值。
+
+interface invoke 在 `runCall` 中遵循同一规则：receiver/args 只读一次，
+`invokeMethodOn` 只调用一次，最后 `packResults` 一次。没有需要同步维护的
+独立 direct-function 或 direct-method 入口。
 
 `receiverMatches` 接受运行时类型与目标类型完全匹配，外加两种灵活性：
 
@@ -637,7 +671,7 @@ func init() {
 `Program.Run(name, args...)` 把调用包在 10 秒的 `context.WithTimeout` 里。
 `RunWithContext(ctx, ...)` 直接使用调用方提供的 context。前端流水线会在
 构建阶段之间检查 `ctx.Err()`；SSA 运行时也会在函数入口检查一次，然后大约
-每执行 1024 条 SSA/fast 指令检查一次，所以紧循环会返回
+每执行 1024 条 planned operation 检查一次，所以紧循环会返回
 `context.DeadlineExceeded` / `context.Canceled`，而不是等外层 goroutine
 被杀掉。正在执行中的宿主 `reflect.Call` 无法被 Gig 从内部抢占；取消会在
 宿主调用前或调用返回后被观察到。
@@ -681,8 +715,9 @@ internal/frontend/builder.go            编译流水线
 internal/frontend/host_iface_check.go   G_iface_ban 检查
 value/value.go                          tagged-union Value、Converter
 internal/interp/engine.go               program、typeResolver、命名类型 tag
-internal/interp/frame.go                callSSA、runFrame、panic-recover
-internal/interp/ops.go                  指令分发
+internal/interp/frame.go                canonical cells、callSSA、runFrame、panic-recover
+internal/interp/plan.go                 cached layout、Phi group、有序 block operations
+internal/interp/ops.go                  generic 指令与 call 分发
 internal/interp/arith.go                BinOp、UnOp、标量转换
 internal/interp/composite.go            Field、Slice、Map、Range、MakeInterface
 internal/interp/closure.go              基于 reflect.MakeFunc 的 MakeClosure

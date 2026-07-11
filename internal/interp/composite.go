@@ -297,11 +297,11 @@ func fusableIndexAddrConsumer(indexAddr *ssa.IndexAddr, consumer ssa.Instruction
 }
 
 func isPlainIntSliceType(t types.Type) bool {
-	s, ok := t.Underlying().(*types.Slice)
+	s, ok := types.Unalias(t).(*types.Slice)
 	if !ok {
 		return false
 	}
-	b, ok := s.Elem().Underlying().(*types.Basic)
+	b, ok := types.Unalias(s.Elem()).(*types.Basic)
 	return ok && b.Kind() == types.Int
 }
 

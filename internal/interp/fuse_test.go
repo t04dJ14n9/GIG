@@ -204,6 +204,30 @@ func TestFrameLayoutCombinesSafeIndexAddrPairs(t *testing.T) {
 	}
 }
 
+func TestFrameLayoutKeepsNamedIntSlicePairsGeneric(t *testing.T) {
+	const src = `type S []int; func Touch(s S) int { s[0] = 7; return s[0] }`
+	ctx := context.Background()
+	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	layout := (&program{}).frameLayout(unit.Package().Func("Touch"))
+	var loads, stores int
+	for _, block := range layout.blocks {
+		for _, op := range block.ops {
+			switch op.kind {
+			case planIntIndexLoad:
+				loads++
+			case planIntIndexStore:
+				stores++
+			}
+		}
+	}
+	if loads != 0 || stores != 0 {
+		t.Fatalf("planned named-slice loads=%d stores=%d, want zero", loads, stores)
+	}
+}
+
 func TestFrameLayoutBuildsOneOrderedIntLoopPlan(t *testing.T) {
 	const src = `func Sum() int { s := 0; for i := 1; i <= 1000; i++ { s += i }; return s }`
 	ctx := context.Background()

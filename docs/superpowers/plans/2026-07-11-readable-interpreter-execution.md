@@ -387,7 +387,7 @@ git commit -m "refactor(interp): execute one ordered block plan"
 
 - [ ] **Step 1: Write and run the failing planned-index test**
 
-Replace `TestFrameLayoutCachesFusableIndexAddrConsumers` in `internal/interp/fuse_test.go` with:
+Replace `TestFrameLayoutKeepsIndexedOperationsGeneric` in `internal/interp/fuse_test.go` with:
 
 ```go
 func TestFrameLayoutCombinesSafeIndexAddrPairs(t *testing.T) {

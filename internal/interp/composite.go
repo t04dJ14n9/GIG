@@ -4,7 +4,7 @@
 // The storage model is:
 //
 //   - Scalar locals live as immutable value.Value with the appropriate Kind
-//     stored in fr.cells[ssa.Value].Value.
+//     stored in fr.values[fr.layout.index[ssa.Value]].
 //   - Composite locals are wrapped in a single-element addressable
 //     reflect.Value (built by reflect.New(rt).Elem() and stored as
 //     KindReflect). Field/IndexAddr/Slice operate on these reflect
@@ -120,7 +120,7 @@ func (p *program) runMakeInterface(fr *frame, instr *ssa.MakeInterface) (continu
 	// so downstream IsNil()/equality treat it as Go would.
 	ifaceRT, err := p.resolver.ResolveType(instr.Type())
 	if err != nil || ifaceRT.Kind() != reflect.Interface {
-		fr.setCell(instr, x)
+		fr.setValue(instr, x)
 		return contNext, nil, nil //nolint:nilerr // Missing host interface metadata falls back to the original value.
 	}
 	// Resolve the source's static type and use it as a hint so that
@@ -151,10 +151,10 @@ func (p *program) runMakeInterface(fr *frame, instr *ssa.MakeInterface) (continu
 		if innerRV.IsValid() {
 			anyHolder.Set(innerRV)
 		}
-		fr.setCell(instr, value.MakeInterfaceBox(anyHolder))
+		fr.setValue(instr, value.MakeInterfaceBox(anyHolder))
 		return contNext, nil, nil
 	}
-	fr.setCell(instr, value.MakeInterfaceBox(holder))
+	fr.setValue(instr, value.MakeInterfaceBox(holder))
 	return contNext, nil, nil
 }
 
@@ -189,7 +189,7 @@ func (p *program) runField(fr *frame, instr *ssa.Field) (continuation, []value.V
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, out)
+	fr.setValue(instr, out)
 	return contNext, nil, nil
 }
 
@@ -222,7 +222,7 @@ func (p *program) runFieldAddr(fr *frame, instr *ssa.FieldAddr) (continuation, [
 		rv = holder
 	}
 	addr := rv.Field(instr.Field).Addr()
-	fr.setCell(instr, reflectValue(addr))
+	fr.setValue(instr, reflectValue(addr))
 	return contNext, nil, nil
 }
 
@@ -258,7 +258,7 @@ func (p *program) runIndexAddr(fr *frame, instr *ssa.IndexAddr) (continuation, [
 		rv = holder
 	}
 	elem := rv.Index(idx)
-	fr.setCell(instr, reflectValue(elem.Addr()))
+	fr.setValue(instr, reflectValue(elem.Addr()))
 	return contNext, nil, nil
 }
 
@@ -316,7 +316,7 @@ func (p *program) runIndex(fr *frame, instr *ssa.Index) (continuation, []value.V
 	}
 	idx := int(idxV.Int())
 	if s, ok := x.IntSlice(); ok {
-		fr.setCell(instr, value.MakeInt(int64(s[idx])))
+		fr.setValue(instr, value.MakeInt(int64(s[idx])))
 		return contNext, nil, nil
 	}
 	rv, err := p.reflectOf(x, nil)
@@ -330,7 +330,7 @@ func (p *program) runIndex(fr *frame, instr *ssa.Index) (continuation, []value.V
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, out)
+	fr.setValue(instr, out)
 	return contNext, nil, nil
 }
 
@@ -375,14 +375,14 @@ func (p *program) runSlice(fr *frame, instr *ssa.Slice) (continuation, []value.V
 		sliced = rv.Slice(low, high)
 	}
 	if s, ok := reflectIntSlice(sliced); ok {
-		fr.setCell(instr, value.MakeIntSlice(s))
+		fr.setValue(instr, value.MakeIntSlice(s))
 		return contNext, nil, nil
 	}
 	out, err := p.converter.FromReflect(sliced)
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, out)
+	fr.setValue(instr, out)
 	return contNext, nil, nil
 }
 
@@ -405,7 +405,7 @@ func (p *program) runLookup(fr *frame, instr *ssa.Lookup) (continuation, []value
 	if rv.Kind() == reflect.String {
 		// Lookup on string returns the byte at index.
 		idx := int(keyV.Int())
-		fr.setCell(instr, value.MakeUint8(rv.String()[idx]))
+		fr.setValue(instr, value.MakeUint8(rv.String()[idx]))
 		return contNext, nil, nil
 	}
 	if rv.Kind() != reflect.Map {
@@ -435,9 +435,9 @@ func (p *program) runLookup(fr *frame, instr *ssa.Lookup) (continuation, []value
 		holder := reflect.New(rt).Elem()
 		holder.Field(0).Set(got)
 		holder.Field(1).SetBool(ok)
-		fr.setCell(instr, reflectValue(holder))
+		fr.setValue(instr, reflectValue(holder))
 	} else {
-		fr.setCell(instr, gotV)
+		fr.setValue(instr, gotV)
 	}
 	return contNext, nil, nil
 }
@@ -484,7 +484,7 @@ func (p *program) runMakeSlice(fr *frame, instr *ssa.MakeSlice) (continuation, [
 		return contNext, nil, err
 	}
 	if isPlainIntSliceType(instr.Type()) {
-		fr.setCell(instr, value.MakeIntSlice(make([]int, int(lenV.Int()), int(capV.Int()))))
+		fr.setValue(instr, value.MakeIntSlice(make([]int, int(lenV.Int()), int(capV.Int()))))
 		return contNext, nil, nil
 	}
 	rt, err := p.resolver.ResolveType(instr.Type())
@@ -496,7 +496,7 @@ func (p *program) runMakeSlice(fr *frame, instr *ssa.MakeSlice) (continuation, [
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, v)
+	fr.setValue(instr, v)
 	return contNext, nil, nil
 }
 
@@ -518,7 +518,7 @@ func (p *program) runMakeMap(fr *frame, instr *ssa.MakeMap) (continuation, []val
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, v)
+	fr.setValue(instr, v)
 	return contNext, nil, nil
 }
 
@@ -536,7 +536,7 @@ func (p *program) runMakeChan(fr *frame, instr *ssa.MakeChan) (continuation, []v
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, v)
+	fr.setValue(instr, v)
 	return contNext, nil, nil
 }
 
@@ -574,7 +574,7 @@ func (p *program) runRange(fr *frame, instr *ssa.Range) (continuation, []value.V
 	default:
 		return contNext, nil, fmt.Errorf("interp: Range over %s not supported", rv.Kind())
 	}
-	fr.setCell(instr, value.MakeNil()) // sentinel; the iterator goes through fr.iters
+	fr.setValue(instr, value.MakeNil()) // sentinel; the iterator goes through fr.iters
 	// Stash the iterator in a side-channel keyed by ssa.Value so Next
 	// can find it. Simpler than packaging it inside value.Value.
 	if fr.iters == nil {
@@ -632,7 +632,7 @@ func (p *program) runNext(fr *frame, instr *ssa.Next) (continuation, []value.Val
 			holder.Field(0).SetBool(false)
 		}
 	}
-	fr.setCell(instr, reflectValue(holder))
+	fr.setValue(instr, reflectValue(holder))
 	return contNext, nil, nil
 }
 
@@ -655,6 +655,6 @@ func (p *program) runExtract(fr *frame, instr *ssa.Extract) (continuation, []val
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, out)
+	fr.setValue(instr, out)
 	return contNext, nil, nil
 }

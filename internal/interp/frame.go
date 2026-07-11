@@ -34,15 +34,10 @@ type frame struct {
 	block     *ssa.BasicBlock // current basic block; nil means the frame is done
 	prevBlock *ssa.BasicBlock // predecessor used to select Phi edges
 
-	// cellStorage owns the canonical Cells for values known at layout time.
-	// cells indexes those same Cells by ssa.Value object identity; SSA names
-	// are diagnostic and are not guaranteed to be unique.
-	cellStorage []Cell
-	cells       map[ssa.Value]*Cell
+	layout *frameLayout
+	values []value.Value
 
-	blocks   []blockPlan
-	freeVars []*Cell
-	iters    map[ssa.Value]*rangeIter
+	iters map[ssa.Value]*rangeIter
 
 	// defer / panic / recover state.
 	defers    []*deferRecord
@@ -53,14 +48,8 @@ type frame struct {
 }
 
 type frameLayout struct {
-	// values records every frame-local SSA value in deterministic order. index
-	// maps each value to its offset in frame.cellStorage.
-	// It is built once per *ssa.Function and reused by every call frame.
-	values       []ssa.Value
-	index        map[ssa.Value]int
-	cellTemplate []Cell
-
-	// blocks contains one ordered immutable execution plan per SSA block.
+	values []ssa.Value
+	index  map[ssa.Value]int
 	blocks []blockPlan
 }
 
@@ -70,55 +59,33 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 	}
 
 	values, index := collectFrameValues(fn)
-	cellTemplate := make([]Cell, len(values))
-	for i, v := range values {
-		cellTemplate[i].Name = v.Name()
-		cellTemplate[i].Type = v.Type()
-	}
-
 	blocks := make([]blockPlan, len(fn.Blocks))
 	for _, block := range fn.Blocks {
 		blocks[block.Index] = compileBlockPlan(block, index)
 	}
-	layout := &frameLayout{
-		values:       values,
-		index:        index,
-		cellTemplate: cellTemplate,
-		blocks:       blocks,
-	}
+	layout := &frameLayout{values: values, index: index, blocks: blocks}
 	actual, _ := p.layouts.LoadOrStore(fn, layout)
 	return actual.(*frameLayout)
 }
 
-func newCellStore(layout *frameLayout) ([]Cell, map[ssa.Value]*Cell) {
-	storage := make([]Cell, len(layout.values))
-	copy(storage, layout.cellTemplate)
-	return storage, indexCellStore(layout, storage)
-}
-
-func indexCellStore(layout *frameLayout, storage []Cell) map[ssa.Value]*Cell {
-	cells := make(map[ssa.Value]*Cell, len(layout.values))
-	for i, v := range layout.values {
-		cells[v] = &storage[i]
+func (fr *frame) value(v ssa.Value) (value.Value, bool) {
+	idx, ok := fr.layout.index[v]
+	if !ok {
+		return value.Value{}, false
 	}
-	return cells
+	return fr.values[idx], true
 }
 
-func (fr *frame) cell(v ssa.Value) (*Cell, bool) {
-	cell, ok := fr.cells[v]
-	return cell, ok
-}
-
-func (fr *frame) setCell(v ssa.Value, val value.Value) {
-	if cell, ok := fr.cells[v]; ok {
-		cell.Value = val
-		return
+func (fr *frame) setValue(v ssa.Value, val value.Value) {
+	idx, ok := fr.layout.index[v]
+	if !ok {
+		panic(fmt.Sprintf("interp: internal: %s has no frame index for %T %s", fr.fn.Name(), v, v.Name()))
 	}
-	fr.cells[v] = &Cell{Name: v.Name(), Type: v.Type(), Value: val}
+	fr.values[idx] = val
 }
 
-func (fr *frame) bindCell(v ssa.Value, val value.Value) {
-	fr.setCell(v, val)
+func (fr *frame) bindValue(v ssa.Value, val value.Value) {
+	fr.setValue(v, val)
 }
 
 // callSSA invokes an SSA function with the given args. Returns the
@@ -147,7 +114,7 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 
 	// Bind parameters.
 	for i, param := range fn.Params {
-		fr.bindCell(param, args[i])
+		fr.bindValue(param, args[i])
 	}
 
 	// Bind free variables (closures). Empty for plain functions.
@@ -155,10 +122,10 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 		if i >= len(freeVars) {
 			break
 		}
-		fr.bindCell(fv, freeVars[i].Value)
+		fr.bindValue(fv, freeVars[i].Value)
 	}
 
-	// Pre-allocate Cells for every Local. Locals are pointer-typed in
+	// Pre-allocate values for every Local. Locals are pointer-typed in
 	// SSA and the interpreter models them as addressable
 	// reflect.Values: see runAlloc for the same treatment of heap
 	// Allocs.
@@ -168,7 +135,7 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 		if err != nil {
 			return nil, fmt.Errorf("interp: %s: alloc local %s: %w", fn.Name(), local.Name(), err)
 		}
-		fr.bindCell(local, reflectValue(addr.Addr()))
+		fr.bindValue(local, reflectValue(addr.Addr()))
 	}
 
 	// Install a panic handler so deferred functions can run and
@@ -224,38 +191,32 @@ func (p *program) newFrame(fn *ssa.Function, freeVars []*Cell) *frame {
 }
 
 func (p *program) newFrameWithLayout(fn *ssa.Function, freeVars []*Cell, layout *frameLayout) *frame {
-	// The layout is shared, but cells are per-call. A recursive call to the
-	// same function gets different storage with the same value index.
-	const inlineFrameCellCount = 8
+	const inlineFrameValueCount = 8
 	type inlineFrame struct {
 		frame
-		storage [inlineFrameCellCount]Cell
+		values [inlineFrameValueCount]value.Value
 	}
 
 	var fr *frame
-	if len(layout.values) <= inlineFrameCellCount {
+	if len(layout.values) <= inlineFrameValueCount {
 		allocation := &inlineFrame{}
 		fr = &allocation.frame
-		fr.cellStorage = allocation.storage[:len(layout.values)]
-		copy(fr.cellStorage, layout.cellTemplate)
-		fr.cells = indexCellStore(layout, fr.cellStorage)
+		fr.values = allocation.values[:len(layout.values)]
 	} else {
-		fr = &frame{}
-		fr.cellStorage, fr.cells = newCellStore(layout)
+		fr = &frame{values: make([]value.Value, len(layout.values))}
 	}
 	fr.fn = fn
+	fr.layout = layout
 	fr.block = fn.Blocks[0]
-	fr.blocks = layout.blocks
-	fr.freeVars = freeVars
 	return fr
 }
 
 func (fr *frame) blockPlan() *blockPlan {
-	if fr.block == nil || fr.blocks == nil {
+	if fr.block == nil || fr.layout == nil {
 		return nil
 	}
-	if idx := fr.block.Index; idx >= 0 && idx < len(fr.blocks) {
-		return &fr.blocks[idx]
+	if idx := fr.block.Index; idx >= 0 && idx < len(fr.layout.blocks) {
+		return &fr.layout.blocks[idx]
 	}
 	return nil
 }
@@ -286,7 +247,7 @@ func (p *program) zeroResultsFor(fn *ssa.Function) ([]value.Value, error) {
 
 // runFrame is the dispatch loop. It walks blocks until a Return is
 // hit or an error escapes. Control-flow instructions update fr.block and
-// fr.prevBlock; value-producing instructions update canonical cell storage.
+// fr.prevBlock; value-producing instructions update canonical value storage.
 func (p *program) runFrame(caller *frame, fr *frame, depth int) ([]value.Value, error) {
 	if err := fr.checkContextNow(); err != nil {
 		return nil, err

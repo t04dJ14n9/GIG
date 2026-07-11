@@ -167,11 +167,11 @@ func (p *program) readValue(fr *frame, v ssa.Value) (value.Value, error) {
 		// in slices/maps. No free variables.
 		return p.makeFuncValue(fr.ctx, x, nil)
 	}
-	cell, ok := fr.cell(v)
+	stored, ok := fr.value(v)
 	if !ok {
-		return value.Value{}, fmt.Errorf("interp: %s: no cell for %s (%T)", fr.fn.Name(), v.Name(), v)
+		return value.Value{}, fmt.Errorf("interp: %s: no value for %s (%T)", fr.fn.Name(), v.Name(), v)
 	}
-	return cell.Value, nil
+	return stored, nil
 }
 
 // constToValue translates an ssa.Const to a runtime Value. The Convert
@@ -263,7 +263,7 @@ func (p *program) runBinOp(fr *frame, instr *ssa.BinOp) (continuation, []value.V
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, out)
+	fr.setValue(instr, out)
 	return contNext, nil, nil
 }
 
@@ -288,7 +288,7 @@ func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Val
 			elem := rv.Elem()
 			return p.storeLoadedReflect(fr, instr, elem)
 		}
-		fr.setCell(instr, x)
+		fr.setValue(instr, x)
 		return contNext, nil, nil
 	}
 	if instr.Op == token.ARROW {
@@ -313,13 +313,13 @@ func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Val
 			holder := reflect.New(rt).Elem()
 			holder.Field(0).Set(recv)
 			holder.Field(1).SetBool(ok)
-			fr.setCell(instr, reflectValue(holder))
+			fr.setValue(instr, reflectValue(holder))
 		} else {
 			out, err := p.converter.FromReflect(recv)
 			if err != nil {
 				return contNext, nil, err
 			}
-			fr.setCell(instr, out)
+			fr.setValue(instr, out)
 		}
 		return contNext, nil, nil
 	}
@@ -327,13 +327,13 @@ func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Val
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, out)
+	fr.setValue(instr, out)
 	return contNext, nil, nil
 }
 
 func (p *program) storeLoadedReflect(fr *frame, instr ssa.Value, elem reflect.Value) (continuation, []value.Value, error) {
 	if s, ok := reflectIntSlice(elem); ok {
-		fr.setCell(instr, value.MakeIntSlice(s))
+		fr.setValue(instr, value.MakeIntSlice(s))
 		return contNext, nil, nil
 	}
 	if needsReflectSnapshot(elem) {
@@ -345,7 +345,7 @@ func (p *program) storeLoadedReflect(fr *frame, instr ssa.Value, elem reflect.Va
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, out)
+	fr.setValue(instr, out)
 	return contNext, nil, nil
 }
 
@@ -369,7 +369,7 @@ func (p *program) runConvert(fr *frame, instr *ssa.Convert) (continuation, []val
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, out)
+	fr.setValue(instr, out)
 	return contNext, nil, nil
 }
 
@@ -388,12 +388,12 @@ func (p *program) runChangeType(fr *frame, instr *ssa.ChangeType) (continuation,
 			srcRV.Type() != dstRT && srcRV.Type().ConvertibleTo(dstRT) {
 			out, err := p.converter.FromReflect(srcRV.Convert(dstRT))
 			if err == nil {
-				fr.setCell(instr, out)
+				fr.setValue(instr, out)
 				return contNext, nil, nil
 			}
 		}
 	}
-	fr.setCell(instr, x)
+	fr.setValue(instr, x)
 	return contNext, nil, nil
 }
 
@@ -409,12 +409,12 @@ func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) (con
 	}
 	dstRT, err := p.resolver.ResolveType(instr.Type())
 	if err != nil || dstRT.Kind() != reflect.Interface {
-		fr.setCell(instr, x)
+		fr.setValue(instr, x)
 		return contNext, nil, nil //nolint:nilerr // Missing host interface metadata falls back to the original value.
 	}
 	srcRV, err := p.reflectOf(x, nil)
 	if err != nil || !srcRV.IsValid() {
-		fr.setCell(instr, x)
+		fr.setValue(instr, x)
 		return contNext, nil, nil //nolint:nilerr // Unreflectable values remain in their interpreter representation.
 	}
 	holder := reflect.New(dstRT).Elem()
@@ -427,7 +427,7 @@ func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) (con
 	} else if dyn.IsValid() && dyn.Type().ConvertibleTo(dstRT) {
 		holder.Set(dyn.Convert(dstRT))
 	}
-	fr.setCell(instr, value.MakeInterfaceBox(holder))
+	fr.setValue(instr, value.MakeInterfaceBox(holder))
 	return contNext, nil, nil
 }
 
@@ -457,7 +457,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 		if err != nil {
 			return contNext, nil, err
 		}
-		fr.setCell(instr, stored)
+		fr.setValue(instr, stored)
 		return contNext, nil, nil
 	}
 	// Built-ins (len, cap, append, ...) come through as *ssa.Builtin.
@@ -466,7 +466,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 		if err != nil {
 			return contNext, nil, err
 		}
-		fr.setCell(instr, out)
+		fr.setValue(instr, out)
 		return contNext, nil, nil
 	}
 	// Direct call to *ssa.Function — the common case.
@@ -491,7 +491,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 			if err != nil {
 				return contNext, nil, err
 			}
-			fr.setCell(instr, stored)
+			fr.setValue(instr, stored)
 			return contNext, nil, nil
 		}
 		results, err := p.callSSA(fr.ctx, fr, fn, args, nil, depth+1)
@@ -502,7 +502,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 		if err != nil {
 			return contNext, nil, err
 		}
-		fr.setCell(instr, stored)
+		fr.setValue(instr, stored)
 		return contNext, nil, nil
 	}
 	// Indirect call: target is some SSA value whose runtime form is a
@@ -530,7 +530,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 			if err != nil {
 				return contNext, nil, err
 			}
-			fr.setCell(instr, stored)
+			fr.setValue(instr, stored)
 			return contNext, nil, nil
 		}
 	}
@@ -567,7 +567,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, stored)
+	fr.setValue(instr, stored)
 	return contNext, nil, nil
 }
 
@@ -605,7 +605,7 @@ func (p *program) packResults(t types.Type, results []value.Value) (value.Value,
 // callBuiltin handles the universe-block call targets (len, cap,
 // append, copy, delete, print, println, panic, recover, real, imag,
 // complex). It returns a single Value or an error; callers store the
-// result in the SSA-instruction cell.
+// result in the SSA instruction's frame value.
 func (p *program) callBuiltin(caller *frame, fr *frame, b *ssa.Builtin, ssaArgs []ssa.Value) (value.Value, error) {
 	args := make([]value.Value, len(ssaArgs))
 	for i, a := range ssaArgs {
@@ -759,7 +759,7 @@ func (p *program) runAlloc(fr *frame, instr *ssa.Alloc) (continuation, []value.V
 		return contNext, nil, err
 	}
 	pointer := addr.Addr()
-	fr.bindCell(instr, reflectValue(pointer))
+	fr.bindValue(instr, reflectValue(pointer))
 	return contNext, nil, nil
 }
 
@@ -777,24 +777,20 @@ func (p *program) runStore(fr *frame, instr *ssa.Store) (continuation, []value.V
 		cell.Value = val
 		return contNext, nil, nil
 	}
-	cell, ok := fr.cell(instr.Addr)
+	stored, ok := fr.value(instr.Addr)
 	if !ok {
-		return contNext, nil,
-			fmt.Errorf("interp: %s: store to unknown address %T %s",
-				fr.fn.Name(), instr.Addr, instr.Addr.Name())
+		return contNext, nil, fmt.Errorf(
+			"interp: %s: store to unknown address %T %s",
+			fr.fn.Name(), instr.Addr, instr.Addr.Name(),
+		)
 	}
-	// Two storage shapes:
-	//   - cell holds a reflect-pointer (from FieldAddr/IndexAddr/Alloc-with-composite):
-	//     deref and Set into the pointee.
-	//   - cell holds a plain value (Alloc of basic type): replace the
-	//     cell's Value.
-	if rv, ok := cell.Value.Reflect(); ok && rv.Kind() == reflect.Ptr && !rv.IsNil() {
+	if rv, ok := stored.Reflect(); ok && rv.Kind() == reflect.Ptr && !rv.IsNil() {
 		if err := p.assignReflectValue(rv.Elem(), val); err != nil {
 			return contNext, nil, err
 		}
 		return contNext, nil, nil
 	}
-	cell.Value = val
+	fr.setValue(instr.Addr, val)
 	return contNext, nil, nil
 }
 

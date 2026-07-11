@@ -107,6 +107,6 @@ func (p *program) runMakeClosure(fr *frame, instr *ssa.MakeClosure) (continuatio
 	if err != nil {
 		return contNext, nil, err
 	}
-	fr.setCell(instr, v)
+	fr.setValue(instr, v)
 	return contNext, nil, nil
 }

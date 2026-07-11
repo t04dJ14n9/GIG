@@ -306,7 +306,7 @@ func (r intRef) read(fr *frame) int64 {
 	if r.isConstant {
 		return r.constant
 	}
-	return fr.cellStorage[r.cell].Value.Int()
+	return fr.values[r.cell].Int()
 }
 
 func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int) (continuation, []value.Value, error) {
@@ -318,34 +318,34 @@ func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int
 		y := op.y.read(fr)
 		switch op.op {
 		case token.ADD:
-			fr.cellStorage[op.dst].Value = value.MakeInt(x + y)
+			fr.values[op.dst] = value.MakeInt(x + y)
 		case token.SUB:
-			fr.cellStorage[op.dst].Value = value.MakeInt(x - y)
+			fr.values[op.dst] = value.MakeInt(x - y)
 		case token.MUL:
-			fr.cellStorage[op.dst].Value = value.MakeInt(x * y)
+			fr.values[op.dst] = value.MakeInt(x * y)
 		case token.QUO:
-			fr.cellStorage[op.dst].Value = value.MakeInt(x / y)
+			fr.values[op.dst] = value.MakeInt(x / y)
 		case token.REM:
-			fr.cellStorage[op.dst].Value = value.MakeInt(x % y)
+			fr.values[op.dst] = value.MakeInt(x % y)
 		case token.EQL:
-			fr.cellStorage[op.dst].Value = value.MakeBool(x == y)
+			fr.values[op.dst] = value.MakeBool(x == y)
 		case token.NEQ:
-			fr.cellStorage[op.dst].Value = value.MakeBool(x != y)
+			fr.values[op.dst] = value.MakeBool(x != y)
 		case token.LSS:
-			fr.cellStorage[op.dst].Value = value.MakeBool(x < y)
+			fr.values[op.dst] = value.MakeBool(x < y)
 		case token.LEQ:
-			fr.cellStorage[op.dst].Value = value.MakeBool(x <= y)
+			fr.values[op.dst] = value.MakeBool(x <= y)
 		case token.GTR:
-			fr.cellStorage[op.dst].Value = value.MakeBool(x > y)
+			fr.values[op.dst] = value.MakeBool(x > y)
 		case token.GEQ:
-			fr.cellStorage[op.dst].Value = value.MakeBool(x >= y)
+			fr.values[op.dst] = value.MakeBool(x >= y)
 		default:
 			return contNext, nil, fmt.Errorf("interp: unsupported planned int op %s", op.op)
 		}
 		return contNext, nil, nil
 	case planIf:
 		succ := 1
-		if fr.cellStorage[op.cond].Value.Bool() {
+		if fr.values[op.cond].Bool() {
 			succ = 0
 		}
 		fr.prevBlock, fr.block = fr.block, fr.block.Succs[succ]
@@ -354,7 +354,7 @@ func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int
 		fr.prevBlock, fr.block = fr.block, fr.block.Succs[0]
 		return contJump, nil, nil
 	case planIntIndexLoad, planIntIndexStore:
-		s, ok := fr.cellStorage[op.slice].Value.IntSlice()
+		s, ok := fr.values[op.slice].IntSlice()
 		if !ok {
 			cont, results, err := p.visitInstr(caller, fr, op.instr, depth)
 			if err != nil || cont != contNext {
@@ -364,7 +364,7 @@ func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int
 		}
 		idx := int(op.index.read(fr))
 		if op.kind == planIntIndexLoad {
-			fr.cellStorage[op.dst].Value = value.MakeInt(int64(s[idx]))
+			fr.values[op.dst] = value.MakeInt(int64(s[idx]))
 		} else {
 			s[idx] = int(op.stored.read(fr))
 		}
@@ -403,7 +403,7 @@ func (p *program) runBlockPhis(fr *frame, phis []phiPlan) error {
 		}
 		ref := phi.edges[edge]
 		if ref.cell != missingCell {
-			staged[i] = fr.cellStorage[ref.cell].Value
+			staged[i] = fr.values[ref.cell]
 			continue
 		}
 		v, err := p.readValue(fr, ref.value)
@@ -413,7 +413,7 @@ func (p *program) runBlockPhis(fr *frame, phis []phiPlan) error {
 		staged[i] = v
 	}
 	for i, phi := range phis {
-		fr.cellStorage[phi.dst].Value = staged[i]
+		fr.values[phi.dst] = staged[i]
 	}
 	return nil
 }

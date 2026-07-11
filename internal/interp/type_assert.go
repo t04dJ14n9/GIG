@@ -99,7 +99,7 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 		} else {
 			holder.Field(1).SetBool(false)
 		}
-		fr.setCell(instr, reflectValue(holder))
+		fr.setValue(instr, reflectValue(holder))
 	default:
 		if !assignable {
 			if !rv.IsValid() {
@@ -108,7 +108,7 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 			panic(fmt.Errorf("interface conversion: %s is not %s", rv.Type(), dst))
 		}
 		if interpretedAssignable {
-			fr.setCell(instr, x)
+			fr.setValue(instr, x)
 			return contNext, nil, nil
 		}
 		converted := rv
@@ -119,7 +119,7 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 		if err != nil {
 			return contNext, nil, err
 		}
-		fr.setCell(instr, out)
+		fr.setValue(instr, out)
 	}
 	return contNext, nil, nil
 }

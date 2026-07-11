@@ -190,7 +190,7 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 		}
 		recvFieldIdx++
 	}
-	fr.setCell(instr, reflectValue(holder))
+	fr.setValue(instr, reflectValue(holder))
 	return contNext, nil, nil
 }
 

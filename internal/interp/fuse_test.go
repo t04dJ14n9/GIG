@@ -137,7 +137,7 @@ func TestRunIndexAddrMaterializesReflectPointerForGenericPairFallback(t *testing
 	}
 
 	fr := prog.newFrame(fn, nil)
-	fr.bindCell(fn.Params[0], reflectValue(reflect.ValueOf([]int{0})))
+	fr.bindValue(fn.Params[0], reflectValue(reflect.ValueOf([]int{0})))
 	if _, _, err := prog.runIndexAddr(fr, indexAddr); err != nil {
 		t.Fatalf("runIndexAddr: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestFrameLayoutBuildsOneOrderedIntLoopPlan(t *testing.T) {
 	}
 }
 
-func TestFrameUsesOneCanonicalCellPerSSAValue(t *testing.T) {
+func TestFrameUsesOneCanonicalValuePerSSAValue(t *testing.T) {
 	const src = `func Identity(x int) int { return x }`
 	ctx := context.Background()
 	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
@@ -270,11 +270,11 @@ func TestFrameUsesOneCanonicalCellPerSSAValue(t *testing.T) {
 	layout := prog.frameLayout(fn)
 	fr := prog.newFrameWithLayout(fn, nil, layout)
 	param := fn.Params[0]
-	cell, ok := fr.cell(param)
+	idx, ok := fr.layout.index[param]
 	if !ok {
-		t.Fatal("parameter has no canonical cell")
+		t.Fatal("parameter has no canonical value")
 	}
-	cell.Value = value.MakeInt(42)
+	fr.values[idx] = value.MakeInt(42)
 	got, err := prog.readValue(fr, param)
 	if err != nil {
 		t.Fatalf("readValue: %v", err)
@@ -282,8 +282,13 @@ func TestFrameUsesOneCanonicalCellPerSSAValue(t *testing.T) {
 	if got.Int() != 42 {
 		t.Fatalf("readValue = %d, want 42", got.Int())
 	}
-	if fr.cells[param] != cell {
-		t.Fatal("cell lookup did not preserve identity")
+	indexed, ok := fr.value(param)
+	if !ok || indexed.Int() != fr.values[idx].Int() {
+		t.Fatal("layout index did not select the canonical value")
+	}
+	second := prog.newFrameWithLayout(fn, nil, layout)
+	if &fr.values[idx] == &second.values[idx] {
+		t.Fatal("frames share mutable value storage")
 	}
 }
 

@@ -1,7 +1,8 @@
 // closure.go contains MakeClosure and the helper makeFuncValue. Both
 // produce reflect-backed callable values that, when invoked, re-enter
 // the interpreter with the captured free variables bound to their
-// cells.
+// frame slots. Captures are direct Values; addressable bindings retain
+// sharing through reflected pointer Values.
 package interp
 
 import (
@@ -18,7 +19,7 @@ type interpretedFunc struct {
 	p        *program
 	ctx      context.Context
 	fn       *ssa.Function
-	freeVars []*Cell
+	freeVars []value.Value
 	rv       reflect.Value
 }
 
@@ -44,7 +45,7 @@ func (f *interpretedFunc) CallContext(ctx context.Context, args []value.Value, d
 // references use nil. Interpreted code can call the returned value directly;
 // the reflect.MakeFunc fallback still lets host code call interpreted
 // functions transparently.
-func (p *program) makeFuncValue(ctx context.Context, fn *ssa.Function, freeVars []*Cell) (value.Value, error) {
+func (p *program) makeFuncValue(ctx context.Context, fn *ssa.Function, freeVars []value.Value) (value.Value, error) {
 	rt, err := p.resolver.ResolveType(fn.Signature)
 	if err != nil {
 		return value.Value{}, err
@@ -90,18 +91,18 @@ func (p *program) runMakeClosure(fr *frame, instr *ssa.MakeClosure) (continuatio
 	if !ok {
 		return contNext, nil, fmt.Errorf("interp: MakeClosure target %T not a function", instr.Fn)
 	}
-	freeVars := make([]*Cell, len(instr.Bindings))
-	for i, b := range instr.Bindings {
+	freeVars := make([]value.Value, len(instr.Bindings))
+	for i, binding := range instr.Bindings {
 		// Capture the current binding value, not the outer frame's value slot.
 		// Addressable locals are already represented as pointer Values, so
 		// mutations still go through shared storage. Snapshotting the Value
 		// matters for loop-body Alloc instructions: the same SSA instruction
 		// executes each iteration but must produce a fresh address.
-		v, err := p.readValue(fr, b)
+		captured, err := p.readValue(fr, binding)
 		if err != nil {
 			return contNext, nil, err
 		}
-		freeVars[i] = &Cell{Name: b.Name(), Type: b.Type(), Value: v}
+		freeVars[i] = captured
 	}
 	v, err := p.makeFuncValue(fr.ctx, fn, freeVars)
 	if err != nil {

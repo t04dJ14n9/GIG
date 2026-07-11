@@ -1,6 +1,8 @@
 // Package interp is the direct SSA interpreter. It walks the SSA tree
 // produced by frontend, mapping each ssa.Value through a shared layout index
 // to a compact frame-local value slot and dispatching on instruction type.
+// Mutable values live directly in frame or global storage; addressability is
+// carried by reflected pointer values stored in those slots.
 // There is no bytecode, no opcode table, and no VM pool; see docs/PLAN.md for
 // rationale.
 //
@@ -11,7 +13,6 @@ package interp
 
 import (
 	"context"
-	"go/types"
 
 	"github.com/t04dJ14n9/gig/host"
 	"github.com/t04dJ14n9/gig/internal/frontend"
@@ -40,16 +41,6 @@ type Engine interface {
 // converts to []any.
 type Program interface {
 	Call(ctx context.Context, name string, args []value.Value) ([]value.Value, error)
-}
-
-// Cell is temporary mutable storage for package globals and closure bindings.
-// Frame-local SSA values live directly in compact frame value slots; Cell
-// remains only until globals and closure bindings move to direct values in
-// Task 2.
-type Cell struct {
-	Name  string
-	Type  types.Type
-	Value value.Value
 }
 
 // frame is the per-call activation record. It is unexported because

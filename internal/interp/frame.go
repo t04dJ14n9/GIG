@@ -28,6 +28,8 @@ const cancelCheckInterval = 1024
 // frame is the per-call activation record for one interpreted function
 // invocation. The SSA graph is immutable; all runtime state for that
 // invocation lives here.
+// frame owns the mutable value storage for one call. Addressable SSA values
+// keep reflected pointers in these slots rather than using a separate cell.
 type frame struct {
 	fn        *ssa.Function
 	ctx       context.Context
@@ -93,8 +95,9 @@ func (fr *frame) bindValue(v ssa.Value, val value.Value) {
 // call depth, bumped on every entry to catch runaway recursion.
 //
 // caller is used for diagnostics and recover() once defer/panic land.
-// freeVars is for closures (Phase 6.3); pass nil for plain functions.
-func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, args []value.Value, freeVars []*Cell, depth int) (results []value.Value, err error) {
+// freeVars contains direct captured values for closures; pass nil for plain
+// functions.
+func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, args []value.Value, freeVars []value.Value, depth int) (results []value.Value, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -122,7 +125,7 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 		if i >= len(freeVars) {
 			break
 		}
-		fr.bindValue(fv, freeVars[i].Value)
+		fr.setValue(fv, freeVars[i])
 	}
 
 	// Pre-allocate values for every Local. Locals are pointer-typed in
@@ -185,12 +188,12 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 	return results, err
 }
 
-func (p *program) newFrame(fn *ssa.Function, freeVars []*Cell) *frame {
+func (p *program) newFrame(fn *ssa.Function, freeVars []value.Value) *frame {
 	layout := p.frameLayout(fn)
 	return p.newFrameWithLayout(fn, freeVars, layout)
 }
 
-func (p *program) newFrameWithLayout(fn *ssa.Function, freeVars []*Cell, layout *frameLayout) *frame {
+func (p *program) newFrameWithLayout(fn *ssa.Function, freeVars []value.Value, layout *frameLayout) *frame {
 	const inlineFrameValueCount = 8
 	type inlineFrame struct {
 		frame

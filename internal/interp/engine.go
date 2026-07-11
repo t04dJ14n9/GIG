@@ -52,7 +52,7 @@ func (defaultEngine) NewProgram(ctx context.Context, unit frontend.Unit, env hos
 		env:       env,
 		converter: value.DefaultConverter(),
 		resolver:  newTypeResolver(env, unit.Package().Pkg.Path()),
-		globals:   map[*ssa.Global]*Cell{},
+		globals:   map[*ssa.Global]value.Value{},
 		maxDepth:  maxDepth,
 	}
 	if err := p.allocateGlobals(); err != nil {
@@ -70,16 +70,18 @@ func (defaultEngine) NewProgram(ctx context.Context, unit frontend.Unit, env hos
 
 const defaultMaxDepth = 1024
 
-// program is the running Program. globals is an addressable map of
-// every package-level *ssa.Global to its Cell, allocated once at
-// construction time (matching gofun and Go semantics).
+// program is the running Program. Mutable package globals live directly in
+// globals, allocated once at construction time (matching gofun and Go
+// semantics). Addressability for locals and composite data lives inside
+// reflected pointer values rather than in a second storage wrapper.
 type program struct {
 	ssaPkg      *ssa.Package
 	fset        any // token.FileSet, kept abstract here.
 	env         host.Environment
 	converter   value.Converter
 	resolver    *typeResolver
-	globals     map[*ssa.Global]*Cell
+	globalsMu   sync.RWMutex
+	globals     map[*ssa.Global]value.Value
 	maxDepth    int
 	hostFuncs   sync.Map // map[*ssa.Function]host.Function
 	hostMethods sync.Map // map[hostMethodCacheKey]host.Method or missingHostMethod
@@ -115,9 +117,9 @@ func (p *program) Call(ctx context.Context, name string, args []value.Value) (re
 	return results, err
 }
 
-// allocateGlobals walks every Global in the SSA package and creates an
-// addressable Cell holding its zero value. The interpreter writes
-// through these Cells when it sees `Store` to a *ssa.Global.
+// allocateGlobals walks every Global in the SSA package and stores its zero
+// value directly. The interpreter replaces that value when it sees `Store` to
+// a *ssa.Global.
 func (p *program) allocateGlobals() error {
 	for _, mem := range p.ssaPkg.Members {
 		g, ok := mem.(*ssa.Global)
@@ -133,7 +135,7 @@ func (p *program) allocateGlobals() error {
 		if err != nil {
 			return fmt.Errorf("interp: zero global %s: %w", g.Name(), err)
 		}
-		p.globals[g] = &Cell{Name: g.Name(), Type: ptr.Elem(), Value: zero}
+		p.globals[g] = zero
 	}
 	return nil
 }

@@ -3,10 +3,9 @@
 // primitive scalars (bool, int, uint, float, nil) live entirely in
 // inline fields; composite kinds keep their payload in obj.
 //
-// Mutability belongs to the interpreter's surrounding storage, not Value.
-// Frame-local SSA values occupy compact value slots; globals and closure
-// bindings temporarily use Cell wrappers. A Value is immutable once
-// constructed.
+// Mutability belongs to the interpreter's surrounding frame and global
+// storage, not Value. Addressability is represented inside reflected pointer
+// Values, so a Value itself is immutable once constructed.
 //
 // This package is leaf-level: it depends only on go/types and the Go
 // stdlib, never on host, frontend, or interp. That makes it cheap to

@@ -145,8 +145,11 @@ func (p *program) readValue(fr *frame, v ssa.Value) (value.Value, error) {
 	case *ssa.Const:
 		return p.constToValue(x)
 	case *ssa.Global:
-		if cell, ok := p.globals[x]; ok {
-			return cell.Value, nil
+		p.globalsMu.RLock()
+		stored, ok := p.globals[x]
+		p.globalsMu.RUnlock()
+		if ok {
+			return stored, nil
 		}
 		// Global not in our package — try the host environment for an
 		// external var (fmt.Stdout, encoding/base64.StdEncoding, ...).
@@ -770,11 +773,15 @@ func (p *program) runStore(fr *frame, instr *ssa.Store) (continuation, []value.V
 	}
 	switch addr := instr.Addr.(type) {
 	case *ssa.Global:
-		cell, ok := p.globals[addr]
+		p.globalsMu.Lock()
+		_, ok := p.globals[addr]
+		if ok {
+			p.globals[addr] = val
+		}
+		p.globalsMu.Unlock()
 		if !ok {
 			return contNext, nil, fmt.Errorf("interp: store to unknown global %s", addr.Name())
 		}
-		cell.Value = val
 		return contNext, nil, nil
 	}
 	stored, ok := fr.value(instr.Addr)

@@ -376,6 +376,7 @@ git commit -m "refactor(interp): execute one ordered block plan"
 
 **Files:**
 - Modify: `internal/interp/plan.go`
+- Modify: `internal/interp/frame.go`
 - Modify: `internal/interp/composite.go`
 - Modify: `internal/interp/ops.go`
 - Test: `internal/interp/fuse_test.go`
@@ -434,7 +435,7 @@ Expected: PASS and BubbleSort allocations remain below the existing 500-allocati
 - [ ] **Step 6: Commit indexed-plan simplification**
 
 ```bash
-git add internal/interp/plan.go internal/interp/composite.go internal/interp/ops.go internal/interp/fuse_test.go internal/interp/perf_test.go
+git add internal/interp/plan.go internal/interp/frame.go internal/interp/composite.go internal/interp/ops.go internal/interp/fuse_test.go internal/interp/perf_test.go
 git commit -m "refactor(interp): plan indexed slice operations"
 ```
 

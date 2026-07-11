@@ -347,7 +347,7 @@ Use `-1` as the missing-cell sentinel and initialize every descriptor explicitly
 
 - [ ] **Step 3: Compile every block into one ordered list**
 
-`compileBlockPlan` collects leading Phis, skips `DebugRef`, combines a safe adjacent `IndexAddr` pair, emits optimized int BinOp/If/Jump operations when operands are resolvable, and otherwise emits `planGeneric`. It must preserve instruction order exactly.
+`compileBlockPlan` collects leading Phis, skips `DebugRef`, emits optimized int BinOp/If/Jump operations when operands are resolvable, and otherwise emits `planGeneric`. `IndexAddr` and its consumer remain separate generic operations in this checkpoint so the existing `addrRef` behavior remains active until Task 4. The compiler must preserve instruction order exactly.
 
 - [ ] **Step 4: Implement one type-agnostic Phi resolver**
 
@@ -360,7 +360,7 @@ The outer loop resolves Phis once and walks `blockPlan.ops`. `runPlannedOp` writ
 - [ ] **Step 6: Delete `fast_plan.go` and run focused tests**
 
 ```bash
-go test ./internal/interp -run 'TestFrameLayoutBuildsOneOrdered|TestInterp_(PhiAssignmentsAreSimultaneous|ForLoop|NestedLoops|FibRecursive)' -count=1
+go test ./internal/interp -run 'TestFrameLayoutBuildsOneOrdered|TestInterp_(PhisUsePredecessorSnapshot|ManyPhisUseOneSnapshot|ForLoop|NestedLoops|FibRecursive)' -count=1
 ```
 
 Expected: PASS.
@@ -409,7 +409,7 @@ func TestFrameLayoutCombinesSafeIndexAddrPairs(t *testing.T) {
 }
 ```
 
-Run `go test ./internal/interp -run TestFrameLayoutCombinesSafeIndexAddrPairs -count=1`. Expected RED because Task 3's planner has not yet combined indexed pairs.
+Run `go test ./internal/interp -run TestFrameLayoutCombinesSafeIndexAddrPairs -count=1`. Expected RED with zero planned loads/stores because Task 3 declares the operation kinds for the ordered plan but deliberately emits indexed instructions as separate generic operations.
 
 - [ ] **Step 2: Implement native planned load/store**
 

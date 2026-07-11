@@ -286,30 +286,44 @@ git commit -m "refactor(interp): unify host function calls"
 
 **Interfaces:**
 - Consumes: `hostReceiverReflect`, `lookupHostMethod`, `host.DirectMethod`, `lookupInterpretedMethod`, reflect fallback, and the current `caller *frame` recover threading.
-- Produces: one `invokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value) ([]value.Value, error)`.
+- Produces: `callResolvedHostMethod` plus one `invokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value) ([]value.Value, error)`.
 
-- [ ] **Step 1: Try DirectMethod inside the ordinary host-method branch**
+- [ ] **Step 1: Write and run the failing resolved-method test**
+
+Extend `internal/interp/host_call_test.go` with complete `host.Method` and `host.DirectMethod` recording adapters, mirroring the function test. Cover direct handled, direct declined to ordinary `Method.Call`, and direct error without generic fallback. Call the desired `callResolvedHostMethod` helper directly and confirm RED because it does not exist.
+
+Also add the missing `callResolvedHostFunc` direct-error subtest from Task 3: a direct error must return immediately while the embedded generic function's call count remains zero.
+
+- [ ] **Step 2: Add one resolved-method helper**
 
 ```go
-if hm, ok := p.lookupHostMethod(rv, method); ok {
-	if direct, ok := hm.(host.DirectMethod); ok {
-		result, handled, err := direct.CallDirect(dynRecv, args)
+func callResolvedHostMethod(method host.Method, recv value.Value, args []value.Value) ([]value.Value, error) {
+	if direct, ok := method.(host.DirectMethod); ok {
+		result, handled, err := direct.CallDirect(recv, args)
 		if err != nil { return nil, err }
 		if handled { return []value.Value{result}, nil }
 	}
-	return hm.Call(dynRecv, args)
+	return method.Call(recv, args)
 }
 ```
 
-- [ ] **Step 2: Preserve fallback order in the same function**
+- [ ] **Step 3: Use the helper inside the ordinary host-method branch**
+
+```go
+if hm, ok := p.lookupHostMethod(rv, method); ok {
+	return callResolvedHostMethod(hm, dynRecv, args)
+}
+```
+
+- [ ] **Step 4: Preserve fallback order in the same function**
 
 After host adapters, try the interpreted SSA method with adjusted receiver shape, then reflect `MethodByName`, addressable receiver, and one pointer dereference. Keep existing argument/result error context.
 
-- [ ] **Step 3: Delete direct-method entry points**
+- [ ] **Step 5: Delete direct-method entry points**
 
 Remove `invokeMethodOnDirect` and `invokeMethodOnDirectResult`. In `runCall`, call `invokeMethodOn` once and `packResults` once. Keep `defer_panic.go` passing the current frame as caller.
 
-- [ ] **Step 4: Run method, defer, and recover tests**
+- [ ] **Step 6: Run method, defer, and recover tests**
 
 ```bash
 go test ./host ./internal/interp ./tests -run 'Method|Invoke|Defer|Recover|Panic' -count=1
@@ -317,7 +331,7 @@ go test ./host ./internal/interp ./tests -run 'Method|Invoke|Defer|Recover|Panic
 
 Expected: PASS, including the current recover-target changes.
 
-- [ ] **Step 5: Commit unified method invocation**
+- [ ] **Step 7: Commit unified method invocation**
 
 ```bash
 git add internal/interp/host_call.go internal/interp/ops.go internal/interp/defer_panic.go internal/interp/host_call_test.go

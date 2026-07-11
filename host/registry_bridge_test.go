@@ -13,6 +13,34 @@ type registryBridgeRecord struct {
 	Value int
 }
 
+type countingRegistry struct {
+	*importer.Registry
+	packageLookups    int
+	legacyFuncLookups int
+}
+
+func (r *countingRegistry) GetPackageByPath(path string) *importer.ExternalPackage {
+	r.packageLookups++
+	return r.Registry.GetPackageByPath(path)
+}
+
+func (r *countingRegistry) LookupExternalFunc(pkgPath, name string) (any, bool) {
+	r.legacyFuncLookups++
+	return r.Registry.LookupExternalFunc(pkgPath, name)
+}
+
+func TestRegistryBridgeResolvesFunctionFromOneObjectLookup(t *testing.T) {
+	reg := &countingRegistry{Registry: importer.NewRegistry()}
+	pkg := reg.RegisterPackage("example/once", "once")
+	pkg.AddFunction("Value", func() int { return 7 }, "")
+	if _, ok := FromRegistry(reg).LookupFunc("example/once", "Value"); !ok {
+		t.Fatal("LookupFunc did not find Value")
+	}
+	if reg.packageLookups != 1 || reg.legacyFuncLookups != 0 {
+		t.Fatalf("package lookups=%d legacy function lookups=%d, want 1/0", reg.packageLookups, reg.legacyFuncLookups)
+	}
+}
+
 func TestRegistryBridgeFunctionFallsBackToReflect(t *testing.T) {
 	reg := importer.NewRegistry()
 	pkg := reg.RegisterPackage("example/reflect", "reflectpkg")

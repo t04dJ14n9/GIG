@@ -13,6 +13,7 @@ import (
 	"reflect"
 
 	"github.com/t04dJ14n9/gig/importer"
+	"github.com/t04dJ14n9/gig/model/external"
 	"github.com/t04dJ14n9/gig/value"
 )
 
@@ -49,24 +50,37 @@ func (b *registryBridge) AutoImport(name string) (Import, bool) {
 	return Import{Path: path, Name: displayName}, true
 }
 
+func (b *registryBridge) lookupObject(pkgPath, name string, want external.ObjectKind) (*importer.ExternalPackage, *external.ExternalObject, bool) {
+	if b == nil || b.reg == nil {
+		return nil, nil, false
+	}
+	pkg := b.reg.GetPackageByPath(pkgPath)
+	if pkg == nil {
+		pkg = b.reg.GetPackageByName(pkgPath)
+	}
+	if pkg == nil {
+		return nil, nil, false
+	}
+	obj := pkg.Objects[name]
+	if obj == nil || obj.Kind != want {
+		return nil, nil, false
+	}
+	return pkg, obj, true
+}
+
 // LookupFunc returns a host.Function backed by the legacy registry's
 // function metadata. Generated DirectCall wrappers run without
 // reflect.Value.Call; functions without wrappers fall back to reflect.
 func (b *registryBridge) LookupFunc(pkgPath, name string) (Function, bool) {
-	if b.reg == nil {
-		return nil, false
-	}
-	fn, ok := b.reg.LookupExternalFunc(pkgPath, name)
+	_, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindFunction)
 	if !ok {
 		return nil, false
 	}
-	var directCall func([]value.Value) ([]value.Value, error)
-	if pkg := b.reg.GetPackageByPath(pkgPath); pkg != nil {
-		if obj := pkg.Objects[name]; obj != nil {
-			directCall = obj.DirectCall
-		}
+	rv := reflect.ValueOf(obj.Value)
+	if rv.Kind() != reflect.Func {
+		return nil, false
 	}
-	return &reflectFunc{name: name, fn: reflect.ValueOf(fn), directCall: directCall}, true
+	return &reflectFunc{name: obj.Name, fn: rv, directCall: obj.DirectCall}, true
 }
 
 // LookupVar returns the host-side address of a registered variable.
@@ -77,33 +91,23 @@ func (b *registryBridge) LookupFunc(pkgPath, name string) (Function, bool) {
 // — but the global's underlying type may itself be a pointer (e.g.
 // time.UTC is *time.Location), in which case we keep it as-is.
 func (b *registryBridge) LookupVar(pkgPath, name string) (Variable, bool) {
-	if b.reg == nil {
-		return nil, false
-	}
-	ptr, ok := b.reg.LookupExternalVar(pkgPath, name)
+	_, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindVariable)
 	if !ok {
 		return nil, false
 	}
-	addr := reflect.ValueOf(ptr)
+	addr := reflect.ValueOf(obj.Value)
 	if addr.Kind() != reflect.Ptr {
 		// Defensive: registry should always hand back a pointer.
-		return &reflectVar{name: name, rv: addr}, true
+		return &reflectVar{name: obj.Name, rv: addr}, true
 	}
-	return &reflectVar{name: name, rv: addr.Elem(), addr: addr}, true
+	return &reflectVar{name: obj.Name, rv: addr.Elem(), addr: addr}, true
 }
 
 // LookupConst is best-effort: legacy gig stores const values inside the
 // ExternalPackage's Objects map. Pull from there.
 func (b *registryBridge) LookupConst(pkgPath, name string) (Constant, bool) {
-	if b.reg == nil {
-		return nil, false
-	}
-	pkg := b.reg.GetPackageByPath(pkgPath)
-	if pkg == nil {
-		return nil, false
-	}
-	obj, ok := pkg.Objects[name]
-	if !ok || obj == nil || obj.Value == nil {
+	_, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindConstant)
+	if !ok || obj.Value == nil {
 		return nil, false
 	}
 	conv := value.DefaultConverter()
@@ -111,20 +115,21 @@ func (b *registryBridge) LookupConst(pkgPath, name string) (Constant, bool) {
 	if err != nil {
 		return nil, false
 	}
-	return &reflectConst{name: name, v: v}, true
+	return &reflectConst{name: obj.Name, v: v}, true
 }
 
 // LookupType returns a host.Type for a named type registered in the
 // legacy registry.
 func (b *registryBridge) LookupType(pkgPath, name string) (Type, bool) {
-	if b.reg == nil {
-		return nil, false
-	}
-	rt, ok := b.reg.LookupExternalTypeByName(pkgPath, name)
+	pkg, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindType)
 	if !ok {
 		return nil, false
 	}
-	return &reflectType{name: name, rt: rt}, true
+	rt, ok := pkg.Types[name]
+	if !ok || rt == nil {
+		return nil, false
+	}
+	return &reflectType{name: obj.Name, rt: rt}, true
 }
 
 func (b *registryBridge) LookupReflectType(t types.Type) (reflect.Type, bool) {

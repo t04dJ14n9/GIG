@@ -520,16 +520,35 @@ func (p *program) runHostFunctionCall(fr *frame, instr *ssa.Call, fn *ssa.Functi
 
 func (p *program) runDirectInterpretedCall(fr *frame, instr *ssa.Call, fn *ssa.Function, refs []ssa.Value, depth int) (continuation, []value.Value, error) {
 	var oneArg [1]value.Value
-	args, err := p.readValuesInto(fr, refs, oneArg[:0])
-	if err != nil {
-		return contNext, nil, err
+	var args []value.Value
+	switch len(refs) {
+	case 0:
+	case 1:
+		arg, err := p.readValue(fr, refs[0])
+		if err != nil {
+			return contNext, nil, err
+		}
+		oneArg[0] = arg
+		args = oneArg[:]
+	default:
+		var err error
+		args, err = p.readValuesInto(fr, refs, nil)
+		if err != nil {
+			return contNext, nil, err
+		}
 	}
-	var oneResult [1]value.Value
-	var resultScratch []value.Value
+
 	if fn.Signature.Results().Len() == 1 {
-		resultScratch = oneResult[:0]
+		var oneResult [1]value.Value
+		results, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, oneResult[:0])
+		if err != nil {
+			return contNext, nil, err
+		}
+		fr.setValue(instr, results[0])
+		return contNext, nil, nil
 	}
-	results, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, resultScratch)
+
+	results, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, nil)
 	if err != nil {
 		return contNext, nil, err
 	}

@@ -137,3 +137,46 @@ func ClosureCalls() int {
 		t.Fatalf("ClosureCalls allocs/run = %.0f, want <= 6000", allocs)
 	}
 }
+
+func TestInterpDirectCallScratchAllocationsAreBounded(t *testing.T) {
+	const src = `
+func Echo(x int) int { return x }
+
+func DirectCalls() int {
+	sum := 0
+	for i := 0; i < 100; i++ {
+		sum += Echo(i)
+	}
+	return sum
+}
+`
+	ctx := context.Background()
+	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
+	if err != nil {
+		t.Fatalf("NewProgram: %v", err)
+	}
+	if got, err := prog.Call(ctx, "DirectCalls", nil); err != nil {
+		t.Fatalf("warm Call: %v", err)
+	} else {
+		expectInt(t, got, 4950)
+	}
+
+	allocs := testing.AllocsPerRun(20, func() {
+		got, err := prog.Call(ctx, "DirectCalls", nil)
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		expectInt(t, got, 4950)
+	})
+	t.Logf("DirectCalls allocs/run = %.0f", allocs)
+	// Keep this proportional guard loose enough for toolchain accounting
+	// differences while rejecting one heap allocation for each local argument
+	// and result scratch slot at every direct interpreted call.
+	if allocs > 220 {
+		t.Fatalf("DirectCalls allocs/run = %.0f, want <= 220", allocs)
+	}
+}

@@ -497,3 +497,81 @@ custom-registry fallback，并统一为一条 host-function 和一条 host-metho
 需要注意，现有 `ExtCallReflect`、`ExtCallMethod` 和 `ExtCallMixed` 实际会命中已注册
 的 `DirectMethod` wrapper，而不是最终的 raw-reflection fallback。因此这些比率衡量
 的是统一 host-dispatch 路径，不是纯 reflect-only method 路径。
+
+## 紧凑 Value Frame 性能验收（2026-07-12）
+
+本轮仍在同一台 Apple M3 Pro（12 个逻辑 CPU、36 GiB 内存）上，使用 Go 1.26.3、
+darwin/arm64 顺序执行 benchmark；不同 benchmark 命令之间没有并行测量。设计阶段
+新鲜的五样本 `BenchmarkGig_Fib25` 中位数为 `150,189,599 ns/op`、
+`264,152,537 B/op`、`1,213,943 allocs/op`。
+
+设计阶段的分配 profile 将 `indexCellStore` 直接归因到 40.03% 的对象数和 23.28%
+的字节数，frame 构造累计占 60.39% 的对象数；同时，`runReturn` 的单结果 slice
+占 19.73% 的对象数，`runCall` 的单参数 slice 占 19.63%。这些数据说明首要问题是
+存储所有权和分配，而不是增加新的指令 dispatcher。
+
+### 首轮 gate、失败 profile 与直接调用边界修复
+
+Task 5 首轮七样本中位数为 `61,152,248 ns/op`、`116,537,803 B/op`、
+`728,364 allocs/op`：耗时和字节 gate 已通过，但分配数超过 `500,000` 上限。
+按失败 workload 重新 profile 后，`runDirectInterpretedCall` 直接占 67.01% 的分配
+对象和 13.52% 的分配字节，`newFrameWithLayout` 直接占 32.94% 的对象和 86.39%
+的字节。CPU profile 没有发现重复的通用 SSA 指令热点：`runPlannedOp` 与
+`visitInstr` 各自仅为 0.19% flat、2.70% cumulative，因此没有增加 `planKind`。
+
+编译器 escape 诊断确认局部 `oneArg` 和 `oneResult` 都移动到堆。根因是单参数
+scratch 经过还服务于 host 调用的通用 `readValuesInto` 边界，而单结果 scratch
+经过带 defer/recover 和 slice 返回协议的 `callSSAInto` 边界。聚焦回归测试在修复前
+为 302 allocs/run；把直接解释调用的 0/1/N 参数读取留在直接 helper，并在单结果
+分支直接写回 frame 后为 202 allocs/run。没有引入池、第二套 dispatcher 或 frame
+持有的 scratch。
+
+修复后，单参数 `oneArg` 保持在栈上；单结果 `oneResult` 仍因 `callSSAInto` 的
+defer/recover 与返回 slice 协议移动到堆。继续消除后者需要扩大结果协议改动，而当前
+真实 gate 已通过，因此本轮保留这一明确边界，不用更宽的协议重写换取额外优化。
+
+### 最终七样本 Fib25 gate
+
+| 指标 | 设计前 fresh 基线 | Task 5 首轮 | 最终中位数 | 相对设计基线 Δ | 相对首轮 Δ | gate | gate 余量 | 结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| `ns/op` | 150,189,599 | 61,152,248 | 56,636,440 | -93,553,159 (-62.29%) | -4,515,808 (-7.38%) | 135,170,639 | 78,534,199 | PASS |
+| `B/op` | 264,152,537 | 116,537,803 | 108,768,715 | -155,383,822 (-58.82%) | -7,769,088 (-6.67%) | 180,000,000 | 71,231,285 | PASS |
+| `allocs/op` | 1,213,943 | 728,364 | 485,579 | -728,364 (-60.00%) | -242,785 (-33.33%) | 500,000 | 14,421 | PASS |
+
+最终七样本结果相对上一轮可读模型的 `Fib25` 记录分别为 `0.730249x`（耗时）、
+`0.509093x`（字节）和 `0.500004x`（分配数）；相对本轮设计前 fresh 基线则分别为
+`0.377100x`、`0.411765x` 和 `0.400001x`。
+
+### 17 个代表性 workload 的最终五样本中位数
+
+“相对原记录”是本次 `ns/op` 除以上表最初记录的可读模型前中位数；“上限占用”是
+本次 `ns/op` 除以精确 `3.0x` 上限。`Fib25` 本表使用代表性集合自己的五样本中位数，
+因此与上面的七样本 gate 中位数不同。
+
+| Benchmark | ns/op | B/op | allocs/op | 相对原记录 | 精确上限 | 上限占用 | 上限余量 ns (%) | 结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| `tests/ArithmeticSum` | 56,625 | 728 | 7 | 1.465033x | 115,953 | 0.488344x | 59,328 (51.1656%) | PASS |
+| `tests/FibIterative` | 3,426 | 728 | 7 | 1.198740x | 8,574 | 0.399580x | 5,148 (60.0420%) | PASS |
+| `tests/FibRecursive` | 463,332 | 884,635 | 3,953 | 0.687594x | 2,021,535 | 0.229198x | 1,558,203 (77.0802%) | PASS |
+| `tests/SliceSum` | 124,320 | 9,168 | 12 | 1.345833x | 277,122 | 0.448611x | 152,802 (55.1389%) | PASS |
+| `tests/NestedLoops` | 68,174 | 872 | 8 | 1.380879x | 148,110 | 0.460293x | 79,936 (53.9707%) | PASS |
+| `tests/BubbleSort` | 230,672 | 2,219 | 11 | 1.362521x | 507,894 | 0.454174x | 277,222 (54.5826%) | PASS |
+| `tests/Sieve` | 227,584 | 9,562 | 9 | 1.340290x | 509,406 | 0.446763x | 281,822 (55.3237%) | PASS |
+| `tests/ClosureCalls` | 480,648 | 488,804 | 3,990 | 0.886338x | 1,626,855 | 0.295446x | 1,146,207 (70.4554%) | PASS |
+| `benchmarks/ArithSum` | 56,806 | 728 | 7 | 1.496470x | 113,880 | 0.498823x | 57,074 (50.1177%) | PASS |
+| `benchmarks/Fib25` | 56,909,038 | 108,768,719 | 485,579 | 0.733763x | 232,673,241 | 0.244588x | 175,764,203 (75.5412%) | PASS |
+| `benchmarks/BubbleSort` | 914,919 | 2,708 | 11 | 1.397463x | 1,964,100 | 0.465821x | 1,049,181 (53.4179%) | PASS |
+| `benchmarks/Sieve` | 236,750 | 9,562 | 9 | 1.392647x | 510,000 | 0.464216x | 273,250 (53.5784%) | PASS |
+| `benchmarks/ClosureCalls` | 480,780 | 488,804 | 3,990 | 0.891707x | 1,617,504 | 0.297236x | 1,136,724 (70.2764%) | PASS |
+| `benchmarks/ExtCallDirectCall` | 784,435 | 459,901 | 21,394 | 1.088471x | 2,162,028 | 0.362824x | 1,377,593 (63.7176%) | PASS |
+| `benchmarks/ExtCallReflect` | 438,303 | 238,179 | 9,674 | 1.010520x | 1,301,220 | 0.336840x | 862,917 (66.3160%) | PASS |
+| `benchmarks/ExtCallMethod` | 505,323 | 309,138 | 12,651 | 1.089359x | 1,391,616 | 0.363120x | 886,293 (63.6880%) | PASS |
+| `benchmarks/ExtCallMixed` | 394,921 | 247,811 | 9,708 | 1.110470x | 1,066,902 | 0.370157x | 671,981 (62.9843%) | PASS |
+
+17/17 workload 全部通过。最紧的 `benchmarks/ArithSum` 使用 49.8823% 的精确上限，
+仍留有 `57,074 ns/op`（50.1177%）余量。
+
+外部调用数据仍有同一 caveat：`ExtCallReflect`、`ExtCallMethod` 和 `ExtCallMixed`
+实际会命中已注册的 `DirectMethod` wrapper，而不是最终 raw-reflection fallback；这些
+结果验证的是统一 host-dispatch 与 DirectMethod-backed 路径，不代表纯 reflect-only
+method 性能。

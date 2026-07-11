@@ -70,7 +70,7 @@ Also assert that a missing package and missing name return `ok=false` from every
 
 - [ ] **Step 3: Add variable, constant, and type adapter tests**
 
-Register one mutable integer, one integer constant, and one named struct type. Verify `LookupVar.Get/Set`, `LookupConst.Value`, `LookupType.ReflectType`, and `LookupReflectType` preserve values and types.
+Register one mutable integer, one integer constant, one named struct type, and one interface type such as `io.Reader`. Verify `LookupVar.Get/Set`, `LookupConst.Value`, `LookupType.ReflectType`, and `LookupReflectType` preserve values and exact types. The interface case is required because `reflect.Zero(interfaceType).Interface()` is nil, so its reflect type must come from `ExternalPackage.Types`, not `reflect.TypeOf(obj.Value)`.
 
 - [ ] **Step 4: Run the host bridge tests**
 
@@ -95,19 +95,19 @@ git commit -m "test(host): characterize external object adapters"
 
 **Interfaces:**
 - Consumes: `PackageRegistry.GetPackageByPath/GetPackageByName` and `external.ExternalObject`.
-- Produces: `registryBridge.lookupObject(pkgPath, name string, want external.ObjectKind) (*external.ExternalObject, bool)`.
+- Produces: `registryBridge.lookupObject(pkgPath, name string, want external.ObjectKind) (*importer.ExternalPackage, *external.ExternalObject, bool)`.
 
 - [ ] **Step 1: Add the object helper without changing `PackageRegistry`**
 
 ```go
-func (b *registryBridge) lookupObject(pkgPath, name string, want external.ObjectKind) (*external.ExternalObject, bool) {
-	if b == nil || b.reg == nil { return nil, false }
+func (b *registryBridge) lookupObject(pkgPath, name string, want external.ObjectKind) (*importer.ExternalPackage, *external.ExternalObject, bool) {
+	if b == nil || b.reg == nil { return nil, nil, false }
 	pkg := b.reg.GetPackageByPath(pkgPath)
 	if pkg == nil { pkg = b.reg.GetPackageByName(pkgPath) }
-	if pkg == nil { return nil, false }
+	if pkg == nil { return nil, nil, false }
 	obj := pkg.Objects[name]
-	if obj == nil || obj.Kind != want { return nil, false }
-	return obj, true
+	if obj == nil || obj.Kind != want { return nil, nil, false }
+	return pkg, obj, true
 }
 ```
 
@@ -117,7 +117,7 @@ func (b *registryBridge) lookupObject(pkgPath, name string, want external.Object
 
 - [ ] **Step 3: Use the helper for variables, constants, and types**
 
-Construct each adapter from the object's `Name`, `Value`, and `Type`. `LookupType` may also read `pkg.Types[name]` for the canonical `reflect.Type`, but it performs one package lookup and one object lookup.
+Construct each adapter from the object's `Name`, `Value`, and `Type`. `LookupType` reads `pkg.Types[name]` from the package returned by the same helper call for the canonical `reflect.Type`; it must not perform a second package lookup.
 
 - [ ] **Step 4: Run host and importer tests**
 

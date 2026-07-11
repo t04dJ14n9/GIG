@@ -139,6 +139,7 @@ git commit -m "test(interp): define readable execution model"
 **Files:**
 - Create: `internal/interp/plan.go`
 - Modify: `internal/interp/frame.go`
+- Modify: `internal/interp/fast_plan.go`
 - Modify: `internal/interp/interp.go`
 - Test: `internal/interp/fuse_test.go`
 
@@ -176,12 +177,6 @@ Run `go test ./internal/interp -run TestFrameUsesOneCanonicalCellPerSSAValue -co
 - [ ] **Step 2: Define stable-value collection in `plan.go`**
 
 ```go
-type frameLayout struct {
-	values []ssa.Value
-	index  map[ssa.Value]int
-	blocks []*blockPlan
-}
-
 func collectFrameValues(fn *ssa.Function) ([]ssa.Value, map[ssa.Value]int) {
 	values := make([]ssa.Value, 0, len(fn.Params)+len(fn.FreeVars)+len(fn.Locals))
 	index := make(map[ssa.Value]int)
@@ -202,6 +197,8 @@ func collectFrameValues(fn *ssa.Function) ([]ssa.Value, map[ssa.Value]int) {
 	return values, index
 }
 ```
+
+Keep the existing precompiled block fields temporarily so this checkpoint remains green, but add `values []ssa.Value` to `frameLayout` and remove `slotKinds`. Task 3 replaces the parallel block fields.
 
 - [ ] **Step 3: Replace the frame's dual stores with canonical cells**
 
@@ -239,12 +236,34 @@ type Cell struct {
 }
 ```
 
-Delete `setSlotValue`, `materializeSlot`, and every `fastDirty` synchronization call.
+Delete `setSlotValue`, `materializeSlot`, and every `fastDirty` synchronization call. Update the still-existing `fast_plan.go` to read and write the canonical values directly:
+
+```go
+func (r fastIntRef) read(fr *frame) int64 {
+	if r.kind == fastIntConst { return r.constant }
+	return fr.cellStorage[r.slot].Value.Int()
+}
+
+func (fr *frame) setFastIntSlot(index int, n int64) {
+	fr.cellStorage[index].Value = value.MakeInt(n)
+}
+
+func (fr *frame) setFastBoolSlot(index int, b bool) {
+	fr.cellStorage[index].Value = value.MakeBool(b)
+}
+
+func (fr *frame) readFastBoolSlot(index int) bool {
+	return fr.cellStorage[index].Value.Bool()
+}
+```
+
+`runFastIndexAddr` must likewise read `fr.cellStorage[instr.sliceSlot].Value`. These compatibility helpers keep the existing plan operational while ensuring there is only one value representation.
 
 - [ ] **Step 5: Run canonical-store tests**
 
 ```bash
 go test ./internal/interp -run 'TestFrameUsesOneCanonicalCell|TestInterp_(AddInts|ForLoop|FibRecursive)' -count=1
+go test ./internal/interp -count=1
 ```
 
 Expected: PASS.
@@ -252,7 +271,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit the canonical store**
 
 ```bash
-git add internal/interp/plan.go internal/interp/frame.go internal/interp/interp.go internal/interp/fuse_test.go
+git add internal/interp/plan.go internal/interp/frame.go internal/interp/fast_plan.go internal/interp/interp.go internal/interp/fuse_test.go
 git commit -m "refactor(interp): use one canonical cell store"
 ```
 

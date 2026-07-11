@@ -366,7 +366,7 @@ func SelectMutex() int {
 
 // ChannelTwoWay tests two-way channel communication
 func ChannelTwoWay() int {
-	ch := make(chan int, 1)
+	ch := make(chan int)
 	go func() {
 		v := <-ch
 		ch <- v * 2

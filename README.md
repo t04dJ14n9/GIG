@@ -45,7 +45,10 @@ More details:
   The frontend rejects `unsafe` and `reflect`, rejects `panic` by default, and
   prevents interpreted structs from silently satisfying host non-empty
   interfaces.
-- **Context cancellation**: `RunWithContext` supports timeout and cancellation.
+- **Context cancellation**: `RunWithContext` supports timeout and cancellation
+  for interpreter-owned execution, including blocking channel operations.
+  Registered host functions must implement their own cancellation, normally
+  through an explicit `context.Context` argument.
 - **Native-parity harness**: tests compare interpreted results with native Go
   execution for complex syntax, closures, external calls, panic/recover, and
   other edge cases.

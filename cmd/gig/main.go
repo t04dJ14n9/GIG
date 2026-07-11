@@ -1,10 +1,10 @@
-// gig is a CLI tool for generating gig dependency packages and running an interactive REPL.
+// gig is a CLI tool for generating Gig dependency packages and inspecting
+// interpreted programs.
 //
 // # Commands
 //
 //	gig init -package <name>    Create a new dependency package directory
 //	gig gen <dir>               Generate registration code from <dir>/pkgs.go
-//	gig repl                    Start interactive Go REPL
 //	gig dump <file|->           Print readable SSA
 //
 // # Workflow
@@ -51,7 +51,6 @@ func main() {
 	cmds := []command{
 		{Name: "init", Usage: "gig init -package <name>", Run: commands.RunInit},
 		{Name: "gen", Usage: "gig gen <dir>", Run: commands.RunGen},
-		{Name: "repl", Usage: "gig repl", Run: commands.RunREPL},
 		{Name: "dump", Usage: "gig dump <file|-> | --raw <source>", Run: commands.RunDump},
 	}
 
@@ -80,7 +79,8 @@ func main() {
 
 func printUsage(cmds []command) func() {
 	return func() {
-		fmt.Fprintf(os.Stderr, "gig - generate gig dependency packages and run REPL\n\n")
+		fmt.Fprintln(os.Stderr, "gig - generate Gig dependency packages and inspect interpreted programs")
+		fmt.Fprintln(os.Stderr)
 		fmt.Fprintf(os.Stderr, "Usage:\n")
 		fmt.Fprintf(os.Stderr, "  gig <command> [arguments]\n\n")
 		fmt.Fprintf(os.Stderr, "Commands:\n")
@@ -92,8 +92,6 @@ func printUsage(cmds []command) func() {
 		fmt.Fprintf(os.Stderr, "  2. Edit mydep/pkgs.go              # Add third-party libraries\n")
 		fmt.Fprintf(os.Stderr, "  3. gig gen ./mydep                 # Generate registration code\n")
 		fmt.Fprintf(os.Stderr, "  4. import _ \"myapp/mydep/packages\"      # Use in your program\n")
-		fmt.Fprintf(os.Stderr, "\nREPL:\n")
-		fmt.Fprintf(os.Stderr, "  gig repl                           # Start interactive Go REPL\n")
 		fmt.Fprintf(os.Stderr, "\nDebugging:\n")
 		fmt.Fprintf(os.Stderr, "  gig dump program.go                # Print SSA\n")
 		fmt.Fprintf(os.Stderr, "  gig dump --raw 'package main...'   # Dump inline source\n")

@@ -84,15 +84,6 @@ type program struct {
 	hostFuncs   sync.Map // map[*ssa.Function]host.Function
 	hostMethods sync.Map // map[hostMethodCacheKey]host.Method or missingHostMethod
 	layouts     sync.Map // map[*ssa.Function]*frameLayout
-
-	// panicFrame is set during defer-unwind to the frame that is
-	// currently panicking. The recover() builtin consults it so it
-	// can clear panic state on the right frame even when called from
-	// within a deferred closure (whose own frame is not panicking).
-	// Access is single-goroutine within one Call; cross-goroutine
-	// recover() (a documented Go subtlety) is intentionally out of
-	// scope.
-	panicFrame *frame
 }
 
 // Call resolves the named function and runs it with the given args.
@@ -193,7 +184,6 @@ func (p *program) runInit(ctx context.Context) error {
 type typeResolver struct {
 	mu         sync.RWMutex
 	cache      map[types.Type]reflect.Type
-	inFlight   map[types.Type]bool
 	env        host.Environment
 	srcPkgPath string
 }
@@ -201,24 +191,36 @@ type typeResolver struct {
 func newTypeResolver(env host.Environment, srcPkgPath string) *typeResolver {
 	return &typeResolver{
 		cache:      map[types.Type]reflect.Type{},
-		inFlight:   map[types.Type]bool{},
 		env:        env,
 		srcPkgPath: srcPkgPath,
 	}
 }
 
 func (r *typeResolver) ResolveType(t types.Type) (reflect.Type, error) {
+	return r.resolveType(t, nil)
+}
+
+// resolveType resolves t to a reflect.Type. inFlight tracks the types
+// currently being built on this resolution stack so recursive types
+// (e.g. `type Node struct{ Next *Node }`) can be broken with an
+// interface{} placeholder. It is threaded through the recursion as a
+// parameter rather than stored on the resolver so that concurrent
+// resolutions from interpreted goroutines never share it — the shared
+// cache below is idempotent, but a shared inFlight set would let one
+// goroutine observe another's half-built type and hand back a bogus
+// interface{} placeholder (see the closure-signature race that made
+// reflect.MakeFunc panic under concurrent `go` statements).
+func (r *typeResolver) resolveType(t types.Type, inFlight map[types.Type]bool) (reflect.Type, error) {
 	if t == nil {
 		return nil, fmt.Errorf("interp: nil type")
 	}
 	r.mu.RLock()
-	if rt, ok := r.cache[t]; ok {
-		r.mu.RUnlock()
+	rt, ok := r.cache[t]
+	r.mu.RUnlock()
+	if ok {
 		return rt, nil
 	}
-	cycle := r.inFlight[t]
-	r.mu.RUnlock()
-	if cycle {
+	if inFlight[t] {
 		return reflect.TypeOf((*any)(nil)).Elem(), nil
 	}
 	if r.env != nil {
@@ -229,19 +231,18 @@ func (r *typeResolver) ResolveType(t types.Type) (reflect.Type, error) {
 			return rt, nil
 		}
 	}
-	r.mu.Lock()
-	r.inFlight[t] = true
-	r.mu.Unlock()
-	rt, err := r.build(t)
-	r.mu.Lock()
-	delete(r.inFlight, t)
-	if err == nil {
-		r.cache[t] = rt
+	if inFlight == nil {
+		inFlight = map[types.Type]bool{}
 	}
-	r.mu.Unlock()
+	inFlight[t] = true
+	rt, err := r.build(t, inFlight)
+	delete(inFlight, t)
 	if err != nil {
 		return nil, err
 	}
+	r.mu.Lock()
+	r.cache[t] = rt
+	r.mu.Unlock()
 	return rt, nil
 }
 
@@ -249,7 +250,7 @@ func (r *typeResolver) ResolveType(t types.Type) (reflect.Type, error) {
 // types (mutually-referencing structs) are handled by inserting a
 // placeholder before recursing, but for the common testdata cases a
 // non-cyclic walk is enough.
-func (r *typeResolver) build(t types.Type) (reflect.Type, error) {
+func (r *typeResolver) build(t types.Type, inFlight map[types.Type]bool) (reflect.Type, error) {
 	if b, ok := t.(*types.Basic); ok {
 		if rt := basicReflectType(b.Kind()); rt != nil {
 			return rt, nil
@@ -269,7 +270,7 @@ func (r *typeResolver) build(t types.Type) (reflect.Type, error) {
 		// still work.
 		return reflect.TypeOf((*any)(nil)).Elem(), nil
 	case *types.Named:
-		under, err := r.ResolveType(t.Underlying())
+		under, err := r.resolveType(t.Underlying(), inFlight)
 		if err != nil {
 			return nil, err
 		}
@@ -310,7 +311,7 @@ func (r *typeResolver) build(t types.Type) (reflect.Type, error) {
 		return under, nil
 	case *types.Alias:
 		// Aliases (Go 1.22+) are transparent — just resolve the target.
-		return r.ResolveType(types.Unalias(t))
+		return r.resolveType(types.Unalias(t), inFlight)
 	case *types.Pointer:
 		// Recursion guard at the pointer level: if the pointer's elem
 		// is currently being built (e.g. *Node where Node is the type
@@ -321,40 +322,40 @@ func (r *typeResolver) build(t types.Type) (reflect.Type, error) {
 		// "reflect.Set: *struct{...} not assignable to *interface{}"
 		// problem.
 		r.mu.RLock()
-		elemInFlight := r.inFlight[t.Elem()]
+		_, cached := r.cache[t.Elem()]
 		r.mu.RUnlock()
-		if elemInFlight {
+		if !cached && inFlight[t.Elem()] {
 			return reflect.TypeOf((*any)(nil)).Elem(), nil
 		}
-		elem, err := r.ResolveType(t.Elem())
+		elem, err := r.resolveType(t.Elem(), inFlight)
 		if err != nil {
 			return nil, err
 		}
 		return reflect.PointerTo(elem), nil
 	case *types.Slice:
-		elem, err := r.ResolveType(t.Elem())
+		elem, err := r.resolveType(t.Elem(), inFlight)
 		if err != nil {
 			return nil, err
 		}
 		return reflect.SliceOf(elem), nil
 	case *types.Array:
-		elem, err := r.ResolveType(t.Elem())
+		elem, err := r.resolveType(t.Elem(), inFlight)
 		if err != nil {
 			return nil, err
 		}
 		return reflect.ArrayOf(int(t.Len()), elem), nil
 	case *types.Map:
-		key, err := r.ResolveType(t.Key())
+		key, err := r.resolveType(t.Key(), inFlight)
 		if err != nil {
 			return nil, err
 		}
-		val, err := r.ResolveType(t.Elem())
+		val, err := r.resolveType(t.Elem(), inFlight)
 		if err != nil {
 			return nil, err
 		}
 		return reflect.MapOf(key, val), nil
 	case *types.Chan:
-		elem, err := r.ResolveType(t.Elem())
+		elem, err := r.resolveType(t.Elem(), inFlight)
 		if err != nil {
 			return nil, err
 		}
@@ -372,7 +373,7 @@ func (r *typeResolver) build(t types.Type) (reflect.Type, error) {
 		fields := make([]reflect.StructField, t.NumFields())
 		for i := range fields {
 			f := t.Field(i)
-			ft, err := r.ResolveType(f.Type())
+			ft, err := r.resolveType(f.Type(), inFlight)
 			if err != nil {
 				return nil, err
 			}
@@ -398,14 +399,14 @@ func (r *typeResolver) build(t types.Type) (reflect.Type, error) {
 		// Synthesise a func type. Receiver folds into params.
 		ins := make([]reflect.Type, 0, t.Params().Len())
 		if recv := t.Recv(); recv != nil {
-			rt, err := r.ResolveType(recv.Type())
+			rt, err := r.resolveType(recv.Type(), inFlight)
 			if err != nil {
 				return nil, err
 			}
 			ins = append(ins, rt)
 		}
 		for i := 0; i < t.Params().Len(); i++ {
-			pt, err := r.ResolveType(t.Params().At(i).Type())
+			pt, err := r.resolveType(t.Params().At(i).Type(), inFlight)
 			if err != nil {
 				return nil, err
 			}
@@ -413,7 +414,7 @@ func (r *typeResolver) build(t types.Type) (reflect.Type, error) {
 		}
 		outs := make([]reflect.Type, t.Results().Len())
 		for i := range outs {
-			ot, err := r.ResolveType(t.Results().At(i).Type())
+			ot, err := r.resolveType(t.Results().At(i).Type(), inFlight)
 			if err != nil {
 				return nil, err
 			}
@@ -427,7 +428,7 @@ func (r *typeResolver) build(t types.Type) (reflect.Type, error) {
 		// the struct shape matches.
 		fields := make([]reflect.StructField, t.Len())
 		for i := range fields {
-			ft, err := r.ResolveType(t.At(i).Type())
+			ft, err := r.resolveType(t.At(i).Type(), inFlight)
 			if err != nil {
 				return nil, err
 			}

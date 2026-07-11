@@ -357,12 +357,12 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 		if re := recover(); re != nil {
 			fr.panicking = true
 			fr.panicVal = re
-			prev := p.panicFrame
-			p.panicFrame = fr
+			// Run this frame's defers with fr as their caller so a
+			// deferred closure's recover() can locate the panicking
+			// frame via the threaded caller (see callBuiltin "recover").
 			for i := len(fr.defers) - 1; i >= 0; i-- {
 				_ = p.runDeferRec(fr, fr.defers[i])
 			}
-			p.panicFrame = prev
 			fr.defers = nil
 			if fr.panicking {
 				// Not recovered: propagate as a panic so the caller

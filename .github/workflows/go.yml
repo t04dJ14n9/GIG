@@ -14,8 +14,9 @@ jobs:
     name: Build and Test
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        go: ["1.23.x", "1.24.x", "1.25.x"]
+        go: ["1.23.x", "1.24.x", "1.25.x", "1.26.x"]
     steps:
       - uses: actions/checkout@v6
 
@@ -40,6 +41,41 @@ jobs:
       - name: Test
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
+  cli:
+    name: CLI Build and Test (${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.23.x", "1.26.x"]
+    defaults:
+      run:
+        working-directory: cmd/gig
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+          cache-dependency-path: cmd/gig/go.sum
+
+      - name: Disable false-positive Go annotations
+        run: echo "::remove-matcher owner=go::"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Test
+        run: go test -v -race ./...
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -55,10 +91,17 @@ jobs:
       - name: Disable false-positive Go annotations
         run: echo "::remove-matcher owner=go::"
 
-      - name: golangci-lint
+      - name: golangci-lint (root)
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.4.0
+          args: --timeout=5m
+
+      - name: golangci-lint (CLI)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.4.0
+          working-directory: cmd/gig
           args: --timeout=5m
 
   security:
@@ -67,7 +110,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          args: -exclude-generated -exclude-dir=stdlib/packages -exclude-dir=examples/custom/mydep/packages -exclude-dir=gentool -exclude-dir=cmd/gig -no-fail ./...
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: cmd/gig/go.sum
+
+      - name: Run Gosec Security Scanner (root)
+        uses: securego/gosec@v2.27.1
+        with:
+          # G115 conflicts with Go's defined narrowing conversion semantics,
+          # which the interpreter must preserve. Non-production fixtures,
+          # benchmarks, examples, and the legacy reference tree are excluded.
+          # The nested CLI module is scanned separately below.
+          args: -exclude=G115 -exclude-generated -exclude-dir=stdlib/packages -exclude-dir=examples -exclude-dir=benchmarks -exclude-dir=tests -exclude-dir=reference -exclude-dir=gentool -exclude-dir=cmd/gig ./...
+
+      - name: Run Gosec Security Scanner (CLI)
+        working-directory: cmd/gig
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -exclude=G115 -exclude-generated -exclude-dir=gentool ./...

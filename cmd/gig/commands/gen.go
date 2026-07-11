@@ -51,6 +51,7 @@ func RunGen(fs *flag.FlagSet, args []string) error {
 	fmt.Printf("  packages: %d\n\n", len(importPaths))
 
 	packagesDir := filepath.Join(pkgDir, "packages")
+	// #nosec G301 -- Generated Go package directories must be readable by build users.
 	if err := os.MkdirAll(packagesDir, 0o755); err != nil {
 		return fmt.Errorf("creating packages directory: %w", err)
 	}
@@ -80,7 +81,12 @@ func parsePkgsGo(path string) ([]string, string, error) {
 	}
 
 	// Use go/parser to extract the package name reliably
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.PackageClauseOnly)
+	file, err := parser.ParseFile(
+		token.NewFileSet(),
+		path,
+		nil,
+		parser.PackageClauseOnly|parser.SkipObjectResolution,
+	)
 	if err != nil {
 		return nil, "", fmt.Errorf("parsing package clause: %w", err)
 	}

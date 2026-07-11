@@ -590,7 +590,7 @@ downstream `Extract`. Plain form panics with
 
 ## 11. Code generation — `cmd/gig/`
 
-The CLI has two relevant subcommands; `cli-guide.md` is the user-facing
+The CLI has three relevant subcommands; `cli-guide.md` is the user-facing
 walkthrough. From the architecture side:
 
 - `cmd/gig/commands/gen.go` parses `pkgs.go` for blank imports, then for each
@@ -622,8 +622,8 @@ Three properties of the generated code matter:
 3. The output is one file per import path under `<dir>/packages/`. The user
    blank-imports `<modPath>/packages` to trigger all `init()` registrations.
 
-`cmd/gig/main.go` also exposes `repl` and `init` subcommands described in
-`cli-guide.md`.
+`cmd/gig/main.go` exposes the `init`, `gen`, and `dump` subcommands described
+in `cli-guide.md`.
 
 ---
 

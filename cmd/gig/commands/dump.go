@@ -60,6 +60,7 @@ func readDumpSource(path string) ([]byte, error) {
 	if path == "-" {
 		return io.ReadAll(os.Stdin)
 	}
+	// #nosec G304 -- The CLI explicitly reads the source path selected by the user.
 	source, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)

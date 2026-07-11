@@ -598,7 +598,7 @@ if dst.Kind() == reflect.Interface {
 
 ## 11. 代码生成 —— `cmd/gig/`
 
-CLI 有两个相关子命令；`cli-guide.md` 是面向用户的走读。从架构角度看：
+CLI 有三个相关子命令；`cli-guide_CN.md` 是面向用户的走读。从架构角度看：
 
 - `cmd/gig/commands/gen.go` 解析 `pkgs.go` 里的 blank import，对每个 import
   路径调用 `gentool.PackageImport(path, outDir, "packages")`。
@@ -627,7 +627,8 @@ func init() {
 3. 输出是每个 import 路径在 `<dir>/packages/` 下一个文件。用户对
    `<modPath>/packages` 做 blank import，触发所有 `init()` 注册。
 
-`cmd/gig/main.go` 还暴露了 `repl` 和 `init` 子命令，详见 `cli-guide.md`。
+`cmd/gig/main.go` 提供 `init`、`gen` 和 `dump` 子命令，详见
+`cli-guide_CN.md`。
 
 ---
 
@@ -661,7 +662,7 @@ panic:` 开头的 error，确保嵌入方总是拿到干净的 error 返回。
 
 按任务：
 
-- **加一个标准库包** → `cli-guide.md`。`stdlib/packages/` 下的 wrapper
+- **加一个标准库包** → `cli-guide_CN.md`。`stdlib/packages/` 下的 wrapper
   是参照对象。
 - **加一个第三方包** → `examples/custom/main.go` 和
   `examples/custom/mydep/pkgs.go`。

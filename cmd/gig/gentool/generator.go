@@ -48,7 +48,12 @@ const valueImportPath = "github.com/t04dJ14n9/gig/value"
 // to register.
 func ParsePkgsFile(filePath string) ([]string, error) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, filePath, nil, parser.ImportsOnly)
+	f, err := parser.ParseFile(
+		fset,
+		filePath,
+		nil,
+		parser.ImportsOnly|parser.SkipObjectResolution,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", filePath, err)
 	}

@@ -41,6 +41,10 @@ flowchart TB
         Frame["frame<br/>block/prevBlock + cellStorage + cells pointers"]
         Loop["runFrame<br/>generic Phi group -> ordered operations"]
         Planned["optional plan kinds<br/>plain int/bool + safe plain []int pairs"]
+        FuncCache["lookupHostFunc<br/>program.hostFuncs cache"]
+        FuncResolved["callResolvedHostFunc<br/>direct handled/declined/error"]
+        MethodCache["lookupHostMethod<br/>program.hostMethods cache"]
+        MethodResolved["callResolvedHostMethod<br/>direct handled/declined/error"]
         Program --> Layout --> Frame --> Loop
         Loop --> Planned
     end
@@ -51,33 +55,42 @@ flowchart TB
         Tagged --> Reflect
     end
 
-    subgraph Host["host + importer + gentool"]
-        Registry["importer.Registry<br/>ExternalObject map"]
+    subgraph Host["host"]
         Env["host.Environment"]
-        Lookup["lookupObject<br/>function ExternalObject"]
-        Gen["cmd/gig/gentool<br/>packages/*.go"]
-        FuncResolved["callResolvedHostFunc<br/>direct handled/declined/error"]
-        MethodCache["lookupHostMethod<br/>(reflect.Type, method) cache"]
-        MethodEnv["Environment.LookupMethod"]
+        FuncAdapter["Environment.LookupFunc<br/>registryBridge.lookupObject"]
+        MethodAdapter["Environment.LookupMethod<br/>registryBridge.LookupMethod"]
+        FuncCall["Function.Call fallback"]
+        MethodCall["Method.Call adapter"]
+    end
+
+    subgraph Importer["importer + gentool"]
+        Registry["importer.Registry<br/>ExternalObject map"]
         MethodDirect["LookupMethodDirectCall"]
-        MethodResolved["callResolvedHostMethod<br/>direct handled/declined/error"]
-        Fallback["generic/final fallback<br/>Function.Call / Method.Call / MethodByName"]
-        Gen --> Registry --> Env
-        Env --> Lookup --> FuncResolved
-        MethodCache --> MethodEnv --> MethodDirect --> MethodResolved
-        Registry --> MethodDirect
-        Env --> Fallback
-        FuncResolved --> Fallback
-        MethodResolved --> Fallback
+        Gen["cmd/gig/gentool<br/>packages/*.go"]
+        Gen --> Registry
     end
 
     SSA --> Program
     Loop --> Tagged
     Loop --> Env
-    Loop --> MethodCache
+    Loop --> FuncCache --> FuncResolved
+    FuncCache -->|cache miss| FuncAdapter
+    FuncAdapter -->|host.Function / miss| FuncCache
+    Env --> FuncAdapter
+    Registry --> FuncAdapter
     FuncResolved --> Tagged
+    FuncResolved --> FuncCall --> Tagged
+
+    Loop --> MethodCache --> MethodResolved
+    MethodCache -->|cache miss| MethodAdapter
+    MethodAdapter --> MethodDirect
+    MethodDirect -->|wrapper / miss| MethodAdapter
+    MethodAdapter -->|host.Method / miss| MethodCache
+    Env --> MethodAdapter
+    Registry --> MethodDirect
     MethodResolved --> Tagged
-    Fallback --> Tagged
+    MethodResolved --> MethodCall --> Tagged
+    Registry --> Env
 ```
 
 核心分层：

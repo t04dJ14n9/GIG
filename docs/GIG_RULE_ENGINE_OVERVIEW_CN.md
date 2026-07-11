@@ -134,10 +134,14 @@ sequenceDiagram
     Gig->>I: []value.Value
     I->>I: callSSA -> cached layout -> Phi group + ordered operations
     alt package function
-        I->>H: LookupFunc
-        H->>R: lookupObject -> Objects[name]
-        R-->>H: constructible ExternalObject
-        H-->>I: host.Function
+        I->>I: lookupHostFunc -> program.hostFuncs cache
+        opt cache miss
+            I->>H: Environment.LookupFunc
+            H->>R: lookupObject -> Objects[name]
+            R-->>H: constructible ExternalObject
+            H-->>I: host.Function
+            I->>I: cache host.Function
+        end
         I->>I: callResolvedHostFunc (direct/Function.Call) -> []value.Value
     else host method
         I->>I: lookupHostMethod cache

@@ -286,7 +286,7 @@ func (p *program) zeroResultsFor(fn *ssa.Function) ([]value.Value, error) {
 
 // runFrame is the dispatch loop. It walks blocks until a Return is
 // hit or an error escapes. Control-flow instructions update fr.block and
-// fr.prevBlock; value-producing instructions update frame slots/cells.
+// fr.prevBlock; value-producing instructions update canonical cell storage.
 func (p *program) runFrame(caller *frame, fr *frame, depth int) ([]value.Value, error) {
 	if err := fr.checkContextNow(); err != nil {
 		return nil, err

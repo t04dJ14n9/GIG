@@ -66,9 +66,10 @@ cache and materialization protocol are removed.
 ### One block plan
 
 A cached function layout describes stable SSA values and one ordered plan per
-basic block. When a frame is created, the plan is bound to that frame's direct
-`*Cell` pointers. This one-time binding keeps hot execution free of map lookups
-without creating another value store.
+basic block. Plans store immutable cell indexes into each frame's backing
+storage. Hot execution follows those indexes directly, avoiding map lookups
+without embedding frame-specific `*Cell` pointers in a cached plan or creating
+another value store.
 
 Each bound block contains:
 
@@ -96,9 +97,9 @@ The plan selects the predecessor once, reads every source into a temporary
 buffer, and then commits every destination.
 
 The Phi implementation is type-agnostic. There is no int-only `fastPhi`, typed
-slot cache, or materialization step. Bound cell pointers and constant operands
-retain the useful part of the old optimization while leaving one semantic
-implementation.
+slot cache, or materialization step. Immutable cell indexes and constant
+operands retain the useful part of the old optimization while leaving one
+semantic implementation.
 
 ### Indexed access
 

@@ -307,7 +307,11 @@ go test ./tests -run '^$' \
 | `benchmarks/ExtCallMethod` | 463,872 | 1,391,616 | 309,666 | 12,652 |
 | `benchmarks/ExtCallMixed` | 355,634 | 1,066,902 | 248,643 | 9,708 |
 
-## 阶段性性能提升记录
+## 历史：可读性重构前的阶段性性能提升记录
+
+> 历史说明：本节记录的是可读执行模型重构前的实现。下文提到的
+> `slot cache`、`IndexAddr side-channel`、typed/fast execution plan 已在后续
+> 重构中删除或由统一 cell storage 与 ordered block plan 取代，不代表当前架构。
 
 下面的提升倍数用于记录优化方向和量级。`优化前` 来自本轮 SSA interpreter
 优化开始时的基线；`当前` 来自 Apple M3 Pro 上 `benchmarks` 子模块
@@ -360,7 +364,7 @@ DirectCall 的收益不是来自“第三方函数本身返回 error 与否”�
 | direct closure call | 闭包内部调用跳过 `reflect.MakeFunc` 往返 | `MakeClosure` 产出 `interpretedFunc`，宿主边界仍保留 reflect fallback |
 | gentool DirectCall generation | stdlib package-level functions 690/690 direct，示例依赖 741/741 direct | 支持多返回值、variadic 拆包和第三方包路径前缀命名 |
 
-## 当前结果
+## 当时结果（历史快照）
 
 本轮校验命令：
 
@@ -387,7 +391,7 @@ go test -run '^$' \
 
 结论：Gig 目前不是所有用例都追平 Yaegi。外部函数、方法和混合调用已全部快于 Yaegi；闭包与 BubbleSort 已持平或略快。最明显差距仍在纯算术/筛法这类“小指令、高频 dispatch”循环。
 
-## 正确性验证
+## 当时的正确性验证（历史快照）
 
 本轮改动后通过：
 
@@ -420,7 +424,7 @@ go test ./internal/interp -count=1
 go test ./...
 ```
 
-## 下一阶段路线
+## 当时的下一阶段路线（已被可读执行模型重构取代）
 
 要继续追 Yaegi，重点不再是外部 wrapper，而是 interpreter 内部表示：
 

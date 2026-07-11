@@ -45,6 +45,7 @@ flowchart TB
         FuncResolved["callResolvedHostFunc<br/>direct handled/declined/error"]
         MethodCache["lookupHostMethod<br/>program.hostMethods cache"]
         MethodResolved["callResolvedHostMethod<br/>direct handled/declined/error"]
+        MethodFallback["interpreted SSA method<br/>then MethodByName / Addr / Elem"]
         Program --> Layout --> Frame --> Loop
         Loop --> Planned
     end
@@ -81,8 +82,10 @@ flowchart TB
     FuncResolved --> Tagged
     FuncResolved --> FuncCall --> Tagged
 
-    Loop --> MethodCache --> MethodResolved
-    MethodCache -->|cache miss| MethodAdapter
+    Loop --> MethodCache
+    MethodCache -->|host method hit| MethodResolved
+    MethodCache -->|host method miss| MethodFallback
+    MethodCache -->|cache cold| MethodAdapter
     MethodAdapter --> MethodDirect
     MethodDirect -->|wrapper / miss| MethodAdapter
     MethodAdapter -->|host.Method / miss| MethodCache
@@ -90,6 +93,7 @@ flowchart TB
     Registry --> MethodDirect
     MethodResolved --> Tagged
     MethodResolved --> MethodCall --> Tagged
+    MethodFallback --> Tagged
     Registry --> Env
 ```
 

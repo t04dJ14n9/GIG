@@ -1,10 +1,16 @@
 package interp
 
 import (
+	"context"
 	"errors"
+	"go/token"
 	"go/types"
+	"reflect"
 	"testing"
 
+	"golang.org/x/tools/go/ssa"
+
+	"github.com/t04dJ14n9/gig/host"
 	"github.com/t04dJ14n9/gig/value"
 )
 
@@ -55,6 +61,40 @@ type recordingDirectMethod struct {
 	handled      bool
 	directResult value.Value
 	directErr    error
+}
+
+type hostFallbackReceiver struct{}
+
+type methodFallbackEnv struct {
+	stubEnv
+	methodName string
+	method     host.Method
+}
+
+func (e methodFallbackEnv) LookupMethod(_ string, methodName string) (host.Method, bool) {
+	if e.method != nil && methodName == e.methodName {
+		return e.method, true
+	}
+	return nil, false
+}
+
+func newBodylessHostFunction(t *testing.T, name string) (*ssa.Package, *ssa.Function) {
+	t.Helper()
+	pkg := types.NewPackage("example/fallback", "fallback")
+	sig := types.NewSignatureType(nil, nil, nil, types.NewTuple(), types.NewTuple(), false)
+	obj := types.NewFunc(token.NoPos, pkg, name, sig)
+	if previous := pkg.Scope().Insert(obj); previous != nil {
+		t.Fatalf("insert function %s: existing object %v", name, previous)
+	}
+	pkg.MarkComplete()
+	ssaProg := ssa.NewProgram(token.NewFileSet(), ssa.SanityCheckFunctions)
+	ssaPkg := ssaProg.CreatePackage(pkg, nil, nil, true)
+	ssaPkg.Build()
+	fn := ssaPkg.Func(name)
+	if fn == nil {
+		t.Fatalf("SSA package has no function %s", name)
+	}
+	return ssaPkg, fn
 }
 
 func (m *recordingDirectMethod) CallDirect(value.Value, []value.Value) (value.Value, bool, error) {
@@ -147,6 +187,53 @@ func TestCallResolvedHostMethodSelectsOnePath(t *testing.T) {
 		}
 		if got != nil || method.directCalls != 1 || method.calls != 0 {
 			t.Fatalf("result=%v direct=%d generic=%d", got, method.directCalls, method.calls)
+		}
+	})
+}
+
+func TestCallHostFuncMethodCompatibilityFallbackPreservesInvocationErrors(t *testing.T) {
+	ssaPkg, fn := newBodylessHostFunction(t, "Explode")
+	receiver, err := value.DefaultConverter().FromReflect(reflect.ValueOf(hostFallbackReceiver{}))
+	if err != nil {
+		t.Fatalf("convert receiver: %v", err)
+	}
+
+	t.Run("resolved method error", func(t *testing.T) {
+		wantErr := errors.New("direct method failed through compatibility fallback")
+		method := &recordingDirectMethod{
+			recordingHostMethod: &recordingHostMethod{result: value.MakeInt(9)},
+			directErr:           wantErr,
+		}
+		env := methodFallbackEnv{methodName: fn.Name(), method: method}
+		prog := &program{
+			ssaPkg:    ssaPkg,
+			env:       env,
+			converter: value.DefaultConverter(),
+			resolver:  newTypeResolver(env, ssaPkg.Pkg.Path()),
+		}
+
+		_, err := prog.callHostFunc(context.Background(), fn, []value.Value{receiver})
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("callHostFunc error = %v, want original error %v", err, wantErr)
+		}
+		if method.directCalls != 1 || method.calls != 0 {
+			t.Fatalf("direct=%d generic=%d, want 1/0", method.directCalls, method.calls)
+		}
+	})
+
+	t.Run("genuine method miss", func(t *testing.T) {
+		env := methodFallbackEnv{}
+		prog := &program{
+			ssaPkg:    ssaPkg,
+			env:       env,
+			converter: value.DefaultConverter(),
+			resolver:  newTypeResolver(env, ssaPkg.Pkg.Path()),
+		}
+
+		_, err := prog.callHostFunc(context.Background(), fn, []value.Value{receiver})
+		const want = "interp: host function example/fallback.Explode not found"
+		if err == nil || err.Error() != want {
+			t.Fatalf("callHostFunc error = %v, want %q", err, want)
 		}
 	})
 }

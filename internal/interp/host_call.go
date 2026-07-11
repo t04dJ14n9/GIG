@@ -7,6 +7,7 @@ package interp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/types"
 	"reflect"
@@ -17,6 +18,15 @@ import (
 	"github.com/t04dJ14n9/gig/host"
 	"github.com/t04dJ14n9/gig/value"
 )
+
+type methodNotFoundError struct {
+	method   string
+	receiver reflect.Type
+}
+
+func (e *methodNotFoundError) Error() string {
+	return fmt.Sprintf("interp: method %s not found on %s", e.method, e.receiver)
+}
 
 func callResolvedHostFunc(fn host.Function, args []value.Value) ([]value.Value, error) {
 	if direct, ok := fn.(host.DirectFunction); ok {
@@ -68,8 +78,13 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 		// like bytes/list whose methods register through the legacy
 		// MethodDirectCall path that LookupFunc doesn't see.
 		if len(args) > 0 {
-			if results, err := p.invokeMethodOn(ctx, args[0], fn.Name(), args[1:]); err == nil {
+			results, err := p.invokeMethodOn(ctx, args[0], fn.Name(), args[1:])
+			if err == nil {
 				return results, nil
+			}
+			var miss *methodNotFoundError
+			if !errors.As(err, &miss) {
+				return nil, err
 			}
 		}
 		return nil, fmt.Errorf("interp: host function %s.%s not found", pkgPath, fn.Name())
@@ -133,7 +148,7 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 		}
 	}
 	if !m.IsValid() {
-		return nil, fmt.Errorf("interp: method %s not found on %s", method, rv.Type())
+		return nil, &methodNotFoundError{method: method, receiver: rv.Type()}
 	}
 	mt := m.Type()
 	rargs := make([]reflect.Value, len(args))

@@ -102,26 +102,33 @@ func (b *registryBridge) LookupFunc(pkgPath, name string) (Function, bool) {
 // time.UTC is *time.Location), in which case we keep it as-is.
 func (b *registryBridge) LookupVar(pkgPath, name string) (Variable, bool) {
 	adapterName := name
-	var ptr any
 	_, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindVariable)
 	if ok {
 		adapterName = obj.Name
-		ptr = obj.Value
-	} else {
-		if b == nil || b.reg == nil {
-			return nil, false
-		}
-		ptr, ok = b.reg.LookupExternalVar(pkgPath, name)
-		if !ok {
-			return nil, false
+		if variable, valid := newReflectVar(adapterName, obj.Value); valid {
+			return variable, true
 		}
 	}
+	if b == nil || b.reg == nil {
+		return nil, false
+	}
+	ptr, ok := b.reg.LookupExternalVar(pkgPath, name)
+	if !ok {
+		return nil, false
+	}
+	return newReflectVar(adapterName, ptr)
+}
+
+func newReflectVar(name string, ptr any) (Variable, bool) {
 	addr := reflect.ValueOf(ptr)
-	if addr.Kind() != reflect.Ptr {
-		// Defensive: registry should always hand back a pointer.
-		return &reflectVar{name: adapterName, rv: addr}, true
+	if !addr.IsValid() || addr.Kind() != reflect.Ptr || addr.IsNil() {
+		return nil, false
 	}
-	return &reflectVar{name: adapterName, rv: addr.Elem(), addr: addr}, true
+	target := addr.Elem()
+	if !target.IsValid() || !target.CanSet() {
+		return nil, false
+	}
+	return &reflectVar{name: name, rv: target, addr: addr}, true
 }
 
 // LookupConst is best-effort: legacy gig stores const values inside the

@@ -26,6 +26,20 @@ type legacyLookupRegistry struct {
 	typ      reflect.Type
 }
 
+type variableFallbackRegistry struct {
+	*importer.Registry
+	variable      any
+	legacyVarHits int
+}
+
+func (r *variableFallbackRegistry) LookupExternalVar(pkgPath, name string) (any, bool) {
+	r.legacyVarHits++
+	if pkgPath != "example/variable-fallback" || name != "Mutable" {
+		return nil, false
+	}
+	return r.variable, true
+}
+
 func (r *legacyLookupRegistry) GetPackageByPath(string) *importer.ExternalPackage {
 	return nil
 }
@@ -227,6 +241,81 @@ func TestRegistryBridgeVariableAdapter(t *testing.T) {
 	}
 	if registered != 29 {
 		t.Fatalf("registered value = %d after Set, want 29", registered)
+	}
+}
+
+func TestRegistryBridgeLookupVarFallsBackFromMalformedObjectStorage(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		malformed any
+	}{
+		{name: "non-pointer", malformed: 11},
+		{name: "nil pointer", malformed: (*int)(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fallbackStorage := 17
+			reg := &variableFallbackRegistry{
+				Registry: importer.NewRegistry(),
+				variable: &fallbackStorage,
+			}
+			pkg := reg.RegisterPackage("example/variable-fallback", "variablefallback")
+			objectStorage := 11
+			pkg.AddVariable("Mutable", &objectStorage, "")
+			pkg.Objects["Mutable"].Value = tc.malformed
+
+			variable, ok := FromRegistry(reg).LookupVar("example/variable-fallback", "Mutable")
+			if !ok {
+				t.Fatal("LookupVar did not use the valid legacy storage")
+			}
+			if reg.legacyVarHits != 1 {
+				t.Fatalf("legacy variable lookups = %d, want 1", reg.legacyVarHits)
+			}
+			got, err := variable.Get()
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			ptr, ok := got.Interface().(*int)
+			if !ok || ptr != &fallbackStorage || *ptr != 17 {
+				t.Fatalf("Get returned %T %v, want fallback pointer %p", got.Interface(), got.Interface(), &fallbackStorage)
+			}
+			if err := variable.Set(value.MakeInt(29)); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			if fallbackStorage != 29 {
+				t.Fatalf("fallback storage = %d after Set, want 29", fallbackStorage)
+			}
+			if objectStorage != 11 {
+				t.Fatalf("malformed object storage changed to %d", objectStorage)
+			}
+		})
+	}
+}
+
+func TestRegistryBridgeLookupVarRejectsUnusableObjectAndLegacyStorage(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		malformed any
+	}{
+		{name: "non-pointer", malformed: 17},
+		{name: "nil pointer", malformed: (*int)(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &variableFallbackRegistry{
+				Registry: importer.NewRegistry(),
+				variable: tc.malformed,
+			}
+			pkg := reg.RegisterPackage("example/variable-fallback", "variablefallback")
+			objectStorage := 11
+			pkg.AddVariable("Mutable", &objectStorage, "")
+			pkg.Objects["Mutable"].Value = tc.malformed
+
+			if variable, ok := FromRegistry(reg).LookupVar("example/variable-fallback", "Mutable"); ok {
+				t.Fatalf("LookupVar returned unusable variable %#v", variable)
+			}
+			if reg.legacyVarHits != 1 {
+				t.Fatalf("legacy variable lookups = %d, want 1", reg.legacyVarHits)
+			}
+		})
 	}
 }
 

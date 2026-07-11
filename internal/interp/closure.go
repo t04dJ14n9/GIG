@@ -83,7 +83,7 @@ func (p *program) makeFuncValue(ctx context.Context, fn *ssa.Function, freeVars 
 }
 
 // runMakeClosure handles ssa.MakeClosure: build a free-vars list from
-// the binding cells in the surrounding frame, then wrap the inner
+// the binding values in the surrounding frame, then wrap the inner
 // function so subsequent Call instructions see a callable value.
 func (p *program) runMakeClosure(fr *frame, instr *ssa.MakeClosure) (continuation, []value.Value, error) {
 	fn, ok := instr.Fn.(*ssa.Function)
@@ -92,7 +92,7 @@ func (p *program) runMakeClosure(fr *frame, instr *ssa.MakeClosure) (continuatio
 	}
 	freeVars := make([]*Cell, len(instr.Bindings))
 	for i, b := range instr.Bindings {
-		// Capture the current binding value, not the outer frame's Cell.
+		// Capture the current binding value, not the outer frame's value slot.
 		// Addressable locals are already represented as pointer Values, so
 		// mutations still go through shared storage. Snapshotting the Value
 		// matters for loop-body Alloc instructions: the same SSA instruction

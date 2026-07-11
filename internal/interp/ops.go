@@ -572,7 +572,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 }
 
 // packResults turns a function's []value.Value result tuple into a
-// single Value suitable for storage in the caller's cell. Single
+// single Value suitable for the caller's instruction value slot. Single
 // returns pass through; multi-return tuples become a synthetic
 // reflect-struct so ssa.Extract can read them.
 func (p *program) packResults(t types.Type, results []value.Value) (value.Value, error) {

@@ -266,7 +266,7 @@ func (r *typeResolver) build(t types.Type, inFlight map[types.Type]bool) (reflec
 		// iterator type produced by *ssa.Range. Use the empty
 		// interface as a safe placeholder; callers that try to
 		// concretely use the resulting reflect.Type will fail loudly,
-		// but ones that just need a slot (e.g. Range cell storage)
+		// but ones that just need a slot (e.g. Range iterator value storage)
 		// still work.
 		return reflect.TypeOf((*any)(nil)).Elem(), nil
 	case *types.Named:

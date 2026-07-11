@@ -502,16 +502,6 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 		// etc.) declared via the importer but not implemented in the
 		// interpreted source. Dispatch to host.Environment.
 		if len(fn.Blocks) == 0 {
-			if results, ok, err := p.callHostFuncDirect(fn, args); err != nil {
-				return contNext, nil, err
-			} else if ok {
-				stored, err := p.packResults(instr.Type(), results)
-				if err != nil {
-					return contNext, nil, err
-				}
-				fr.setCell(instr, stored)
-				return contNext, nil, nil
-			}
 			results, err := p.callHostFunc(fr.ctx, fn, args)
 			if err != nil {
 				return contNext, nil, err

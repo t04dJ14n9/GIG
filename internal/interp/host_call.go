@@ -18,6 +18,16 @@ import (
 	"github.com/t04dJ14n9/gig/value"
 )
 
+func callResolvedHostFunc(fn host.Function, args []value.Value) ([]value.Value, error) {
+	if direct, ok := fn.(host.DirectFunction); ok {
+		results, handled, err := direct.CallDirect(args)
+		if err != nil || handled {
+			return results, err
+		}
+	}
+	return fn.Call(args)
+}
+
 // callHostFunc dispatches a body-less *ssa.Function to the host
 // environment. The function name and package path come from the SSA
 // node; the host bridge resolves them to a host.Function. Generated
@@ -51,34 +61,7 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 		}
 		return nil, fmt.Errorf("interp: host function %s.%s not found", pkgPath, fn.Name())
 	}
-	return hf.Call(args)
-}
-
-func (p *program) callHostFuncDirect(fn *ssa.Function, args []value.Value) ([]value.Value, bool, error) {
-	if p.env == nil {
-		return nil, false, fmt.Errorf("interp: %s: no host.Environment registered", fn.Name())
-	}
-	pkgPath := ""
-	if fn.Pkg != nil && fn.Pkg.Pkg != nil {
-		pkgPath = fn.Pkg.Pkg.Path()
-	} else if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-		pkgPath = obj.Pkg().Path()
-	}
-	if fn.Signature.Recv() != nil && len(args) > 0 {
-		return p.invokeMethodOnDirectResult(args[0], fn.Name(), args[1:])
-	}
-	hf, ok := p.lookupHostFunc(fn, pkgPath)
-	if !ok {
-		if len(args) > 0 {
-			return p.invokeMethodOnDirectResult(args[0], fn.Name(), args[1:])
-		}
-		return nil, false, nil
-	}
-	df, ok := hf.(host.DirectFunction)
-	if !ok {
-		return nil, false, nil
-	}
-	return df.CallDirect(args)
+	return callResolvedHostFunc(hf, args)
 }
 
 func (p *program) lookupHostFunc(fn *ssa.Function, pkgPath string) (host.Function, bool) {

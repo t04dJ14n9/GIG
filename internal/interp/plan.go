@@ -11,7 +11,7 @@ import (
 	"github.com/t04dJ14n9/gig/value"
 )
 
-const missingCell = -1
+const missingValueIndex = -1
 
 type planKind uint8
 
@@ -25,12 +25,12 @@ const (
 )
 
 type valueRef struct {
-	cell  int
-	value ssa.Value
+	valueIndex int
+	value      ssa.Value
 }
 
 type intRef struct {
-	cell       int
+	valueIndex int
 	constant   int64
 	isConstant bool
 }
@@ -86,7 +86,7 @@ func collectFrameValues(fn *ssa.Function) ([]ssa.Value, map[ssa.Value]int) {
 	return values, index
 }
 
-func compileBlockPlan(block *ssa.BasicBlock, cells map[ssa.Value]int) blockPlan {
+func compileBlockPlan(block *ssa.BasicBlock, valueIndexes map[ssa.Value]int) blockPlan {
 	plan := blockPlan{
 		phis: nil,
 		ops:  make([]plannedOp, 0, len(block.Instrs)),
@@ -98,7 +98,7 @@ func compileBlockPlan(block *ssa.BasicBlock, cells map[ssa.Value]int) blockPlan 
 		if !ok {
 			break
 		}
-		plan.phis = append(plan.phis, compilePhiPlan(phi, cells))
+		plan.phis = append(plan.phis, compilePhiPlan(phi, valueIndexes))
 		firstOp++
 	}
 
@@ -116,30 +116,30 @@ func compileBlockPlan(block *ssa.BasicBlock, cells map[ssa.Value]int) blockPlan 
 				consumerIndex++
 			}
 			if consumerIndex < len(block.Instrs) {
-				if op, ok := compileIntIndexPair(indexAddr, block.Instrs[consumerIndex], cells); ok {
+				if op, ok := compileIntIndexPair(indexAddr, block.Instrs[consumerIndex], valueIndexes); ok {
 					plan.ops = append(plan.ops, op)
 					i = consumerIndex
 					continue
 				}
 			}
 		}
-		plan.ops = append(plan.ops, compilePlannedOp(instr, cells))
+		plan.ops = append(plan.ops, compilePlannedOp(instr, valueIndexes))
 	}
 	return plan
 }
 
-func compilePhiPlan(phi *ssa.Phi, cells map[ssa.Value]int) phiPlan {
+func compilePhiPlan(phi *ssa.Phi, valueIndexes map[ssa.Value]int) phiPlan {
 	plan := phiPlan{
-		dst:   missingCell,
+		dst:   missingValueIndex,
 		edges: make([]valueRef, len(phi.Edges)),
 	}
-	if dst, ok := cells[phi]; ok {
+	if dst, ok := valueIndexes[phi]; ok {
 		plan.dst = dst
 	}
 	for i, edge := range phi.Edges {
-		ref := valueRef{cell: missingCell, value: edge}
-		if cell, ok := cells[edge]; ok {
-			ref.cell = cell
+		ref := valueRef{valueIndex: missingValueIndex, value: edge}
+		if valueIndex, ok := valueIndexes[edge]; ok {
+			ref.valueIndex = valueIndex
 			ref.value = nil
 		}
 		plan.edges[i] = ref
@@ -147,14 +147,14 @@ func compilePhiPlan(phi *ssa.Phi, cells map[ssa.Value]int) phiPlan {
 	return plan
 }
 
-func compilePlannedOp(instr ssa.Instruction, cells map[ssa.Value]int) plannedOp {
+func compilePlannedOp(instr ssa.Instruction, valueIndexes map[ssa.Value]int) plannedOp {
 	switch x := instr.(type) {
 	case *ssa.BinOp:
-		if op, ok := compileIntBinOp(x, cells); ok {
+		if op, ok := compileIntBinOp(x, valueIndexes); ok {
 			return op
 		}
 	case *ssa.If:
-		if cond, ok := cells[x.Cond]; ok && isPlainBoolType(x.Cond.Type()) {
+		if cond, ok := valueIndexes[x.Cond]; ok && isPlainBoolType(x.Cond.Type()) {
 			op := emptyPlannedOp(planIf, instr)
 			op.cond = cond
 			return op
@@ -165,17 +165,17 @@ func compilePlannedOp(instr ssa.Instruction, cells map[ssa.Value]int) plannedOp 
 	return emptyPlannedOp(planGeneric, instr)
 }
 
-func compileIntBinOp(instr *ssa.BinOp, cells map[ssa.Value]int) (plannedOp, bool) {
+func compileIntBinOp(instr *ssa.BinOp, valueIndexes map[ssa.Value]int) (plannedOp, bool) {
 	op := emptyPlannedOp(planIntBinOp, instr)
-	x, ok := intRefFor(instr.X, cells)
+	x, ok := intRefFor(instr.X, valueIndexes)
 	if !ok {
 		return op, false
 	}
-	y, ok := intRefFor(instr.Y, cells)
+	y, ok := intRefFor(instr.Y, valueIndexes)
 	if !ok {
 		return op, false
 	}
-	dst, ok := cells[instr]
+	dst, ok := valueIndexes[instr]
 	if !ok {
 		return op, false
 	}
@@ -203,31 +203,31 @@ func compileIntBinOp(instr *ssa.BinOp, cells map[ssa.Value]int) (plannedOp, bool
 	return op, true
 }
 
-func compileIntIndexPair(indexAddr *ssa.IndexAddr, consumer ssa.Instruction, cells map[ssa.Value]int) (plannedOp, bool) {
+func compileIntIndexPair(indexAddr *ssa.IndexAddr, consumer ssa.Instruction, valueIndexes map[ssa.Value]int) (plannedOp, bool) {
 	op := emptyPlannedOp(planGeneric, indexAddr)
 	if !fusableIndexAddrConsumer(indexAddr, consumer) || !isPlainIntSliceType(indexAddr.X.Type()) {
 		return op, false
 	}
 
-	slice, ok := cells[indexAddr.X]
+	slice, ok := valueIndexes[indexAddr.X]
 	if !ok {
 		return op, false
 	}
-	index, ok := intRefFor(indexAddr.Index, cells)
+	index, ok := intRefFor(indexAddr.Index, valueIndexes)
 	if !ok {
 		return op, false
 	}
 
 	switch instr := consumer.(type) {
 	case *ssa.UnOp:
-		dst, ok := cells[instr]
+		dst, ok := valueIndexes[instr]
 		if !ok || !isPlainIntType(instr.Type()) {
 			return op, false
 		}
 		op = emptyPlannedOp(planIntIndexLoad, indexAddr)
 		op.dst = dst
 	case *ssa.Store:
-		stored, ok := intRefFor(instr.Val, cells)
+		stored, ok := intRefFor(instr.Val, valueIndexes)
 		if !ok {
 			return op, false
 		}
@@ -243,24 +243,24 @@ func compileIntIndexPair(indexAddr *ssa.IndexAddr, consumer ssa.Instruction, cel
 }
 
 func emptyPlannedOp(kind planKind, instr ssa.Instruction) plannedOp {
-	emptyInt := intRef{cell: missingCell, constant: 0, isConstant: false}
+	emptyInt := intRef{valueIndex: missingValueIndex, constant: 0, isConstant: false}
 	return plannedOp{
 		kind:     kind,
 		instr:    instr,
 		consumer: nil,
 		x:        emptyInt,
 		y:        emptyInt,
-		dst:      missingCell,
-		cond:     missingCell,
-		slice:    missingCell,
+		dst:      missingValueIndex,
+		cond:     missingValueIndex,
+		slice:    missingValueIndex,
 		index:    emptyInt,
 		stored:   emptyInt,
 		op:       token.ILLEGAL,
 	}
 }
 
-func intRefFor(v ssa.Value, cells map[ssa.Value]int) (intRef, bool) {
-	ref := intRef{cell: missingCell, constant: 0, isConstant: false}
+func intRefFor(v ssa.Value, valueIndexes map[ssa.Value]int) (intRef, bool) {
+	ref := intRef{valueIndex: missingValueIndex, constant: 0, isConstant: false}
 	if c, ok := v.(*ssa.Const); ok {
 		n, ok := intConstValue(c)
 		if !ok {
@@ -273,11 +273,11 @@ func intRefFor(v ssa.Value, cells map[ssa.Value]int) (intRef, bool) {
 	if !isPlainIntType(v.Type()) {
 		return ref, false
 	}
-	cell, ok := cells[v]
+	valueIndex, ok := valueIndexes[v]
 	if !ok {
 		return ref, false
 	}
-	ref.cell = cell
+	ref.valueIndex = valueIndex
 	return ref, true
 }
 
@@ -306,7 +306,7 @@ func (r intRef) read(fr *frame) int64 {
 	if r.isConstant {
 		return r.constant
 	}
-	return fr.values[r.cell].Int()
+	return fr.values[r.valueIndex].Int()
 }
 
 func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int) (continuation, []value.Value, error) {
@@ -379,14 +379,14 @@ func (p *program) runBlockPhis(fr *frame, phis []phiPlan) error {
 		return nil
 	}
 
-	edge := missingCell
+	edgeIndex := -1
 	for i, pred := range fr.block.Preds {
 		if pred == fr.prevBlock {
-			edge = i
+			edgeIndex = i
 			break
 		}
 	}
-	if edge == missingCell {
+	if edgeIndex < 0 {
 		return fmt.Errorf("interp: %s: phi at block %d has no matching predecessor edge", fr.fn.Name(), fr.block.Index)
 	}
 
@@ -398,12 +398,12 @@ func (p *program) runBlockPhis(fr *frame, phis []phiPlan) error {
 		staged = staged[:len(phis)]
 	}
 	for i, phi := range phis {
-		if phi.dst == missingCell || edge >= len(phi.edges) {
+		if phi.dst == missingValueIndex || edgeIndex >= len(phi.edges) {
 			return fmt.Errorf("interp: %s: invalid phi plan at block %d", fr.fn.Name(), fr.block.Index)
 		}
-		ref := phi.edges[edge]
-		if ref.cell != missingCell {
-			staged[i] = fr.values[ref.cell]
+		ref := phi.edges[edgeIndex]
+		if ref.valueIndex != missingValueIndex {
+			staged[i] = fr.values[ref.valueIndex]
 			continue
 		}
 		v, err := p.readValue(fr, ref.value)

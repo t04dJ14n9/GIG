@@ -1,7 +1,8 @@
 // Package interp is the direct SSA interpreter. It walks the SSA tree
-// produced by frontend, mapping each ssa.Value to a *Cell and dispatching
-// on instruction type. There is no bytecode, no opcode table, and no VM
-// pool; see docs/PLAN.md for rationale.
+// produced by frontend, mapping each ssa.Value through a shared layout index
+// to a compact frame-local value slot and dispatching on instruction type.
+// There is no bytecode, no opcode table, and no VM pool; see docs/PLAN.md for
+// rationale.
 //
 // Phase 1 ships only the type and interface declarations. The instruction
 // dispatch, frame execution loop, defer/panic/recover, and goroutines all
@@ -41,10 +42,10 @@ type Program interface {
 	Call(ctx context.Context, name string, args []value.Value) ([]value.Value, error)
 }
 
-// Cell is the interpreter's mutable storage unit. Every ssa.Value that
-// can be read or written points to a Cell; this is what gives the
-// interpreter addressable semantics without putting mutability into
-// value.Value itself.
+// Cell is temporary mutable storage for package globals and closure bindings.
+// Frame-local SSA values live directly in compact frame value slots; Cell
+// remains only until globals and closure bindings move to direct values in
+// Task 2.
 type Cell struct {
 	Name  string
 	Type  types.Type

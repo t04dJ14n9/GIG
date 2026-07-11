@@ -9,9 +9,9 @@
 //     reflect.Value (built by reflect.New(rt).Elem() and stored as
 //     KindReflect). Field/IndexAddr/Slice operate on these reflect
 //     values directly, which gives them addressability.
-//   - Pointer SSA values that come from Alloc carry the cell's address
+//   - Pointer SSA values that come from Alloc carry the storage address
 //     (reflect.Value of pointer kind via .Addr()) so UnOp(MUL) and
-//     downstream Stores can dereference and mutate the original cell.
+//     downstream Stores can dereference and mutate the original storage.
 package interp
 
 import (
@@ -74,20 +74,6 @@ func (p *program) reflectOf(v value.Value, hint reflect.Type) (reflect.Value, er
 	return rv, nil
 }
 
-// reflectFromCellValue returns the reflect.Value backing the cell. If
-// the cell already holds a reflect-kind value, return it; otherwise
-// build one out of the value via the converter.
-func (p *program) reflectFromCellValue(c *Cell) (reflect.Value, error) {
-	if rv, ok := c.Value.Reflect(); ok {
-		return rv, nil
-	}
-	rt, err := p.resolver.ResolveType(c.Type)
-	if err != nil {
-		return reflect.Value{}, err
-	}
-	return p.converter.ToReflect(c.Value, rt)
-}
-
 // composeReflectValue wraps an addressable reflect.Value as a Value.
 func reflectValue(rv reflect.Value) value.Value {
 	conv := value.DefaultConverter()
@@ -97,7 +83,7 @@ func reflectValue(rv reflect.Value) value.Value {
 
 // makeAddressable allocates a fresh addressable reflect.Value of the
 // given type, initialised to its zero. This is the canonical "I need
-// somewhere to Store into" cell.
+// somewhere to Store into" storage slot.
 func (p *program) makeAddressable(t types.Type) (reflect.Value, error) {
 	rt, err := p.resolver.ResolveType(t)
 	if err != nil {

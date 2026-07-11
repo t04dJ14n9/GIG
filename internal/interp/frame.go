@@ -228,10 +228,7 @@ func (fr *frame) blockPlan() *blockPlan {
 	return nil
 }
 
-// zeroResultsFor returns the function's zero result tuple (one
-// value.Value per Results entry). Used by the panic-recover path
-// when a deferred recover() consumes a panic and the function would
-// otherwise leak nil results to the caller.
+// prepareValueSlice returns n result slots, reusing scratch when it fits.
 func prepareValueSlice(scratch []value.Value, n int) []value.Value {
 	if n == 0 {
 		return nil
@@ -242,6 +239,10 @@ func prepareValueSlice(scratch []value.Value, n int) []value.Value {
 	return scratch[:n]
 }
 
+// zeroResultsFor returns the function's zero result tuple (one
+// value.Value per Results entry). Used by the panic-recover path
+// when a deferred recover() consumes a panic and the function would
+// otherwise leak nil results to the caller.
 func (p *program) zeroResultsFor(fn *ssa.Function, resultScratch []value.Value) ([]value.Value, error) {
 	sig := fn.Signature
 	if sig == nil {

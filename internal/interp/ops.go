@@ -268,11 +268,6 @@ func (p *program) runBinOp(fr *frame, instr *ssa.BinOp) (continuation, []value.V
 }
 
 func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Value, error) {
-	if instr.Op == token.MUL {
-		if ref, ok := fr.addrRef(instr.X); ok {
-			return p.storeLoadedAddrRef(fr, instr, ref)
-		}
-	}
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
 		return contNext, nil, err
@@ -363,14 +358,6 @@ func reflectIntSlice(rv reflect.Value) ([]int, bool) {
 	}
 	s, ok := rv.Interface().([]int)
 	return s, ok
-}
-
-func (p *program) storeLoadedAddrRef(fr *frame, instr ssa.Value, ref addrRef) (continuation, []value.Value, error) {
-	if ref.intSlice != nil {
-		fr.setCell(instr, value.MakeInt(int64(ref.intSlice[ref.index])))
-		return contNext, nil, nil
-	}
-	return p.storeLoadedReflect(fr, instr, ref.elem)
 }
 
 func (p *program) runConvert(fr *frame, instr *ssa.Convert) (continuation, []value.Value, error) {
@@ -794,14 +781,6 @@ func (p *program) runStore(fr *frame, instr *ssa.Store) (continuation, []value.V
 			return contNext, nil, fmt.Errorf("interp: store to unknown global %s", addr.Name())
 		}
 		cell.Value = val
-		return contNext, nil, nil
-	}
-	if ref, ok := fr.addrRef(instr.Addr); ok {
-		if ref.intSlice != nil {
-			ref.intSlice[ref.index] = int(val.Int())
-		} else if err := p.assignReflectValue(ref.elem, val); err != nil {
-			return contNext, nil, err
-		}
 		return contNext, nil, nil
 	}
 	cell, ok := fr.cell(instr.Addr)

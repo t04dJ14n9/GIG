@@ -39,7 +39,6 @@ type frame struct {
 	// are diagnostic and are not guaranteed to be unique.
 	cellStorage []Cell
 	cells       map[ssa.Value]*Cell
-	addrRefs    map[ssa.Value]addrRef
 
 	blocks   []blockPlan
 	freeVars []*Cell

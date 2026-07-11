@@ -27,34 +27,6 @@ import (
 	"github.com/t04dJ14n9/gig/value"
 )
 
-type addrRef struct {
-	elem     reflect.Value
-	intSlice []int
-	index    int
-}
-
-func (fr *frame) setReflectAddrRef(v ssa.Value, elem reflect.Value) {
-	if fr.addrRefs == nil {
-		fr.addrRefs = make(map[ssa.Value]addrRef, 4)
-	}
-	fr.addrRefs[v] = addrRef{elem: elem}
-}
-
-func (fr *frame) setIntSliceAddrRef(v ssa.Value, s []int, idx int) {
-	if fr.addrRefs == nil {
-		fr.addrRefs = make(map[ssa.Value]addrRef, 4)
-	}
-	fr.addrRefs[v] = addrRef{intSlice: s, index: idx}
-}
-
-func (fr *frame) addrRef(v ssa.Value) (addrRef, bool) {
-	if fr.addrRefs == nil {
-		return addrRef{}, false
-	}
-	ref, ok := fr.addrRefs[v]
-	return ref, ok
-}
-
 // reflectOf returns a reflect.Value for any value.Value, using
 // instrType as the target reflect.Type when the conversion needs a
 // hint. It is the workhorse for composite ops: it normalises every
@@ -264,15 +236,6 @@ func (p *program) runIndexAddr(fr *frame, instr *ssa.IndexAddr) (continuation, [
 		return contNext, nil, err
 	}
 	idx := int(idxV.Int())
-	if s, ok := x.IntSlice(); ok {
-		if indexAddrRefEligible(instr) {
-			fr.setIntSliceAddrRef(instr, s, idx)
-			fr.setCell(instr, value.MakeNil())
-			return contNext, nil, nil
-		}
-		// Fall through to the generic reflect-pointer materialization
-		// only when the address escapes beyond Store/Load consumers.
-	}
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
 		return contNext, nil, err
@@ -295,37 +258,8 @@ func (p *program) runIndexAddr(fr *frame, instr *ssa.IndexAddr) (continuation, [
 		rv = holder
 	}
 	elem := rv.Index(idx)
-	if indexAddrRefEligible(instr) {
-		fr.setReflectAddrRef(instr, elem)
-		fr.setCell(instr, value.MakeNil())
-		return contNext, nil, nil
-	}
 	fr.setCell(instr, reflectValue(elem.Addr()))
 	return contNext, nil, nil
-}
-
-func indexAddrRefEligible(v ssa.Value) bool {
-	refs := v.Referrers()
-	if refs == nil || len(*refs) == 0 {
-		return false
-	}
-	for _, ref := range *refs {
-		switch instr := ref.(type) {
-		case *ssa.Store:
-			if instr.Addr != v {
-				return false
-			}
-		case *ssa.UnOp:
-			if instr.Op != token.MUL || instr.X != v {
-				return false
-			}
-		case *ssa.DebugRef:
-			// Diagnostic-only reference; it does not need a materialized pointer.
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 func fusableIndexAddrConsumer(indexAddr *ssa.IndexAddr, consumer ssa.Instruction) bool {
@@ -360,35 +294,6 @@ func fusableIndexAddrConsumer(indexAddr *ssa.IndexAddr, consumer ssa.Instruction
 		return false
 	}
 	return found
-}
-
-func (p *program) tryRunFusedIndexAddr(fr *frame, indexAddr *ssa.IndexAddr, consumer ssa.Instruction) (bool, error) {
-	x, err := p.readValue(fr, indexAddr.X)
-	if err != nil {
-		return true, err
-	}
-	s, ok := x.IntSlice()
-	if !ok {
-		return false, nil
-	}
-	idxV, err := p.readValue(fr, indexAddr.Index)
-	if err != nil {
-		return true, err
-	}
-	idx := int(idxV.Int())
-	switch instr := consumer.(type) {
-	case *ssa.UnOp:
-		fr.setCell(instr, value.MakeInt(int64(s[idx])))
-		return true, nil
-	case *ssa.Store:
-		val, err := p.readValue(fr, instr.Val)
-		if err != nil {
-			return true, err
-		}
-		s[idx] = int(val.Int())
-		return true, nil
-	}
-	return false, nil
 }
 
 func isPlainIntSliceType(t types.Type) bool {

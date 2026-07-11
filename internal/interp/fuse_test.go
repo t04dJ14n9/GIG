@@ -110,47 +110,97 @@ func MakeSliceArray() int {
 	}
 }
 
-func TestFrameLayoutKeepsIndexedOperationsGeneric(t *testing.T) {
-	const src = `
-func TouchSlice() int {
-	s := make([]int, 2)
-	s[0] = 7
-	x := s[0]
-	return x
-}
-`
+func TestRunIndexAddrMaterializesReflectPointerForGenericPairFallback(t *testing.T) {
+	const src = `func Store(s []int) { s[0] = 7 }`
 	ctx := context.Background()
 	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	fn := unit.Package().Func("TouchSlice")
-	layout := (&program{}).frameLayout(fn)
-	var indexedPairs int
-	for _, block := range layout.blocks {
-		for i, op := range block.ops {
-			if op.kind == planIntIndexLoad || op.kind == planIntIndexStore {
-				t.Fatalf("indexed operation emitted early kind %d", op.kind)
+	progIface, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
+	if err != nil {
+		t.Fatalf("NewProgram: %v", err)
+	}
+	prog := progIface.(*program)
+	fn := unit.Package().Func("Store")
+	var indexAddr *ssa.IndexAddr
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if candidate, ok := instr.(*ssa.IndexAddr); ok {
+				indexAddr = candidate
+				break
 			}
-			indexAddr, ok := op.instr.(*ssa.IndexAddr)
-			if !ok {
-				continue
-			}
-			if op.kind != planGeneric {
-				t.Fatalf("IndexAddr plan kind = %d, want planGeneric", op.kind)
-			}
-			if i+1 >= len(block.ops) {
-				t.Fatalf("IndexAddr %s has no planned consumer", indexAddr.Name())
-			}
-			consumer := block.ops[i+1]
-			if consumer.kind != planGeneric || !fusableIndexAddrConsumer(indexAddr, consumer.instr) {
-				t.Fatalf("IndexAddr %s consumer = (%d, %T), want separate planGeneric consumer", indexAddr.Name(), consumer.kind, consumer.instr)
-			}
-			indexedPairs++
 		}
 	}
-	if indexedPairs != 2 {
-		t.Fatalf("generic indexed pairs = %d, want 2", indexedPairs)
+	if indexAddr == nil {
+		t.Fatal("Store has no IndexAddr")
+	}
+
+	fr := prog.newFrame(fn, nil)
+	fr.bindCell(fn.Params[0], reflectValue(reflect.ValueOf([]int{0})))
+	if _, _, err := prog.runIndexAddr(fr, indexAddr); err != nil {
+		t.Fatalf("runIndexAddr: %v", err)
+	}
+	got, err := prog.readValue(fr, indexAddr)
+	if err != nil {
+		t.Fatalf("readValue: %v", err)
+	}
+	rv, ok := got.Reflect()
+	if !ok || rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Int {
+		t.Fatalf("runIndexAddr stored %s/%v, want reflect pointer to int", got.Kind(), rv)
+	}
+}
+
+func TestPlannedIndexPairsFallBackToGenericReflectSlice(t *testing.T) {
+	const src = `func Touch(s []int) int { s[0] = 7; return s[0] }`
+	ctx := context.Background()
+	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
+	if err != nil {
+		t.Fatalf("NewProgram: %v", err)
+	}
+	backing := []int{0}
+	arg, err := value.DefaultConverter().FromReflect(reflect.ValueOf(backing))
+	if err != nil {
+		t.Fatalf("FromReflect: %v", err)
+	}
+	if _, ok := arg.IntSlice(); ok {
+		t.Fatal("test argument unexpectedly used the native IntSlice shape")
+	}
+	got, err := prog.Call(ctx, "Touch", []value.Value{arg})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	expectInt(t, got, 7)
+	if backing[0] != 7 {
+		t.Fatalf("backing[0] = %d, want 7", backing[0])
+	}
+}
+
+func TestFrameLayoutCombinesSafeIndexAddrPairs(t *testing.T) {
+	const src = `func Touch() int { s := make([]int, 2); s[0] = 7; return s[0] }`
+	ctx := context.Background()
+	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	layout := (&program{}).frameLayout(unit.Package().Func("Touch"))
+	var loads, stores int
+	for _, block := range layout.blocks {
+		for _, op := range block.ops {
+			switch op.kind {
+			case planIntIndexLoad:
+				loads++
+			case planIntIndexStore:
+				stores++
+			}
+		}
+	}
+	if loads == 0 || stores == 0 {
+		t.Fatalf("planned loads=%d stores=%d", loads, stores)
 	}
 }
 

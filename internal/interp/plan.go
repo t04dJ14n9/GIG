@@ -102,9 +102,26 @@ func compileBlockPlan(block *ssa.BasicBlock, cells map[ssa.Value]int) blockPlan 
 		firstOp++
 	}
 
-	for _, instr := range block.Instrs[firstOp:] {
+	for i := firstOp; i < len(block.Instrs); i++ {
+		instr := block.Instrs[i]
 		if _, ok := instr.(*ssa.DebugRef); ok {
 			continue
+		}
+		if indexAddr, ok := instr.(*ssa.IndexAddr); ok {
+			consumerIndex := i + 1
+			for consumerIndex < len(block.Instrs) {
+				if _, ok := block.Instrs[consumerIndex].(*ssa.DebugRef); !ok {
+					break
+				}
+				consumerIndex++
+			}
+			if consumerIndex < len(block.Instrs) {
+				if op, ok := compileIntIndexPair(indexAddr, block.Instrs[consumerIndex], cells); ok {
+					plan.ops = append(plan.ops, op)
+					i = consumerIndex
+					continue
+				}
+			}
 		}
 		plan.ops = append(plan.ops, compilePlannedOp(instr, cells))
 	}
@@ -183,6 +200,45 @@ func compileIntBinOp(instr *ssa.BinOp, cells map[ssa.Value]int) (plannedOp, bool
 	op.y = y
 	op.dst = dst
 	op.op = instr.Op
+	return op, true
+}
+
+func compileIntIndexPair(indexAddr *ssa.IndexAddr, consumer ssa.Instruction, cells map[ssa.Value]int) (plannedOp, bool) {
+	op := emptyPlannedOp(planGeneric, indexAddr)
+	if !fusableIndexAddrConsumer(indexAddr, consumer) || !isPlainIntSliceType(indexAddr.X.Type()) {
+		return op, false
+	}
+
+	slice, ok := cells[indexAddr.X]
+	if !ok {
+		return op, false
+	}
+	index, ok := intRefFor(indexAddr.Index, cells)
+	if !ok {
+		return op, false
+	}
+
+	switch instr := consumer.(type) {
+	case *ssa.UnOp:
+		dst, ok := cells[instr]
+		if !ok || !isPlainIntType(instr.Type()) {
+			return op, false
+		}
+		op = emptyPlannedOp(planIntIndexLoad, indexAddr)
+		op.dst = dst
+	case *ssa.Store:
+		stored, ok := intRefFor(instr.Val, cells)
+		if !ok {
+			return op, false
+		}
+		op = emptyPlannedOp(planIntIndexStore, indexAddr)
+		op.stored = stored
+	default:
+		return op, false
+	}
+	op.consumer = consumer
+	op.slice = slice
+	op.index = index
 	return op, true
 }
 
@@ -298,7 +354,21 @@ func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int
 		fr.prevBlock, fr.block = fr.block, fr.block.Succs[0]
 		return contJump, nil, nil
 	case planIntIndexLoad, planIntIndexStore:
-		return contNext, nil, fmt.Errorf("interp: indexed plan kind %d emitted before indexed planning is enabled", op.kind)
+		s, ok := fr.cellStorage[op.slice].Value.IntSlice()
+		if !ok {
+			cont, results, err := p.visitInstr(caller, fr, op.instr, depth)
+			if err != nil || cont != contNext {
+				return cont, results, err
+			}
+			return p.visitInstr(caller, fr, op.consumer, depth)
+		}
+		idx := int(op.index.read(fr))
+		if op.kind == planIntIndexLoad {
+			fr.cellStorage[op.dst].Value = value.MakeInt(int64(s[idx]))
+		} else {
+			s[idx] = int(op.stored.read(fr))
+		}
+		return contNext, nil, nil
 	default:
 		return contNext, nil, fmt.Errorf("interp: unsupported plan kind %d", op.kind)
 	}

@@ -20,14 +20,6 @@ const (
 	fastJump
 )
 
-type fastSlotKind uint8
-
-const (
-	fastSlotNone fastSlotKind = iota
-	fastSlotInt
-	fastSlotBool
-)
-
 type fastIntRefKind uint8
 
 const (
@@ -45,7 +37,7 @@ func (r fastIntRef) read(fr *frame) int64 {
 	if r.kind == fastIntConst {
 		return r.val
 	}
-	return fr.slots[r.slot].fastInt
+	return fr.cellStorage[r.slot].Value.Int()
 }
 
 type fastPhi struct {
@@ -290,7 +282,7 @@ func (p *program) runFastBlockPhis(fr *frame, phis []fastPhi) error {
 }
 
 func (p *program) runFastIndexAddr(fr *frame, instr fastIndexAddr) bool {
-	s, ok := fr.slots[instr.sliceSlot].Value.IntSlice()
+	s, ok := fr.cellStorage[instr.sliceSlot].Value.IntSlice()
 	if !ok {
 		return false
 	}
@@ -371,17 +363,13 @@ func (p *program) runFastInstr(fr *frame, instr fastInstr) (continuation, []valu
 }
 
 func (fr *frame) setFastIntSlot(slot int, n int64) {
-	cell := &fr.slots[slot]
-	cell.fastInt = n
-	cell.fastDirty = true
+	fr.cellStorage[slot].Value = value.MakeInt(n)
 }
 
 func (fr *frame) setFastBoolSlot(slot int, b bool) {
-	cell := &fr.slots[slot]
-	cell.fastBool = b
-	cell.fastDirty = true
+	fr.cellStorage[slot].Value = value.MakeBool(b)
 }
 
 func (fr *frame) readFastBoolSlot(slot int) bool {
-	return fr.slots[slot].fastBool
+	return fr.cellStorage[slot].Value.Bool()
 }

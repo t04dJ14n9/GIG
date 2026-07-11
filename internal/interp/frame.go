@@ -34,18 +34,12 @@ type frame struct {
 	block     *ssa.BasicBlock // current basic block; nil means the frame is done
 	prevBlock *ssa.BasicBlock // predecessor used to select Phi edges
 
-	// slots is the hot path for SSA values known at layout time. The key is
-	// the ssa.Value object identity, not Value.Name(), because SSA names are
-	// only diagnostic and are not guaranteed to be unique.
-	slots     []Cell
-	slotKinds []fastSlotKind
-	slotIndex map[ssa.Value]int
-
-	// cells is the fallback store for values not assigned a slot, plus
-	// lazily-created side state. Most ordinary instruction results should use
-	// slots instead.
-	cells    map[ssa.Value]*Cell
-	addrRefs map[ssa.Value]addrRef
+	// cellStorage owns the canonical Cells for values known at layout time.
+	// cells indexes those same Cells by ssa.Value object identity; SSA names
+	// are diagnostic and are not guaranteed to be unique.
+	cellStorage []Cell
+	cells       map[ssa.Value]*Cell
+	addrRefs    map[ssa.Value]addrRef
 
 	blockPlans []*blockPlan
 	freeVars   []*Cell
@@ -60,10 +54,12 @@ type frame struct {
 }
 
 type frameLayout struct {
-	// index maps every slotted SSA value in fn to its offset in frame.slots.
+	// values records every frame-local SSA value in deterministic order. index
+	// maps each value to its offset in frame.cellStorage.
 	// It is built once per *ssa.Function and reused by every call frame.
-	index     map[ssa.Value]int
-	slotKinds []fastSlotKind
+	values       []ssa.Value
+	index        map[ssa.Value]int
+	cellTemplate []Cell
 
 	// The remaining fields are precompiled execution hints. They do not
 	// change semantics; runFrame falls back to visitInstr whenever a fast path
@@ -85,46 +81,11 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 		return cached.(*frameLayout)
 	}
 
-	// Assign deterministic slot indexes for values that are local to this
-	// function. Constants and globals are resolved directly by readValue, so
-	// they do not need frame storage.
-	index := make(map[ssa.Value]int)
-	add := func(v ssa.Value) {
-		if v == nil {
-			return
-		}
-		if _, exists := index[v]; exists {
-			return
-		}
-		index[v] = len(index)
-	}
-	for _, param := range fn.Params {
-		add(param)
-	}
-	for _, freeVar := range fn.FreeVars {
-		add(freeVar)
-	}
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			// Alloc returns an address. It is intentionally kept out of the
-			// slot array because each execution of the same Alloc instruction
-			// in a loop must produce a fresh addressable object.
-			if _, ok := instr.(*ssa.Alloc); ok {
-				continue
-			}
-			if v, ok := instr.(ssa.Value); ok {
-				add(v)
-			}
-		}
-	}
-	slotKinds := make([]fastSlotKind, len(index))
-	for v, idx := range index {
-		switch {
-		case isPlainIntType(v.Type()):
-			slotKinds[idx] = fastSlotInt
-		case isPlainBoolType(v.Type()):
-			slotKinds[idx] = fastSlotBool
-		}
+	values, index := collectFrameValues(fn)
+	cellTemplate := make([]Cell, len(values))
+	for i, v := range values {
+		cellTemplate[i].Name = v.Name()
+		cellTemplate[i].Type = v.Type()
 	}
 
 	// Compile block-local fast paths once. The dispatcher still uses the same
@@ -185,8 +146,9 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 		}
 	}
 	layout := &frameLayout{
+		values:         values,
 		index:          index,
-		slotKinds:      slotKinds,
+		cellTemplate:   cellTemplate,
 		fusedIndexAddr: fusedIndexAddr,
 		blockPlans:     blockPlans,
 	}
@@ -194,107 +156,35 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 	return actual.(*frameLayout)
 }
 
-func (fr *frame) cell(v ssa.Value) (*Cell, bool) {
-	if fr.slotIndex != nil {
-		if idx, ok := fr.slotIndex[v]; ok {
-			// Fast plans may update the typed cache without immediately
-			// rebuilding Cell.Value. Materialize before exposing the Cell to
-			// generic instruction code.
-			fr.materializeSlot(idx)
-			return &fr.slots[idx], true
-		}
+func newCellStore(layout *frameLayout) ([]Cell, map[ssa.Value]*Cell) {
+	storage := make([]Cell, len(layout.values))
+	copy(storage, layout.cellTemplate)
+	return storage, indexCellStore(layout, storage)
+}
+
+func indexCellStore(layout *frameLayout, storage []Cell) map[ssa.Value]*Cell {
+	cells := make(map[ssa.Value]*Cell, len(layout.values))
+	for i, v := range layout.values {
+		cells[v] = &storage[i]
 	}
+	return cells
+}
+
+func (fr *frame) cell(v ssa.Value) (*Cell, bool) {
 	cell, ok := fr.cells[v]
 	return cell, ok
 }
 
-func (fr *frame) ensureCells(capHint int) {
-	if fr.cells != nil {
-		return
-	}
-	if capHint < 1 {
-		capHint = 1
-	}
-	fr.cells = make(map[ssa.Value]*Cell, capHint)
-}
-
-// setCell writes the runtime value for an SSA value. Reusing the Cell
-// avoids allocating a new *Cell every time a loop re-executes the same
-// static SSA instruction.
 func (fr *frame) setCell(v ssa.Value, val value.Value) {
-	if fr.slotIndex != nil {
-		if idx, ok := fr.slotIndex[v]; ok {
-			fr.setSlotValue(idx, val)
-			return
-		}
-	}
 	if cell, ok := fr.cells[v]; ok {
 		cell.Value = val
 		return
 	}
-	fr.ensureCells(1)
-	fr.cells[v] = &Cell{Value: val}
-}
-
-// bindCell is used when a value first enters the frame: parameters, free
-// variables, and preallocated locals. Unlike setCell, it preserves the
-// source-facing name and type for diagnostics and addressable locals.
-func (fr *frame) bindCell(v ssa.Value, val value.Value) {
-	if fr.slotIndex != nil {
-		if idx, ok := fr.slotIndex[v]; ok {
-			fr.slots[idx].Name = v.Name()
-			fr.slots[idx].Type = v.Type()
-			fr.setSlotValue(idx, val)
-			return
-		}
-	}
-	if cell, ok := fr.cells[v]; ok {
-		cell.Name = v.Name()
-		cell.Type = v.Type()
-		cell.Value = val
-		return
-	}
-	fr.ensureCells(1)
 	fr.cells[v] = &Cell{Name: v.Name(), Type: v.Type(), Value: val}
 }
 
-// setSlotValue keeps the generic Cell.Value and typed fast cache in sync.
-// Fast instruction runners can later read fastInt/fastBool directly when
-// the slot kind proves the value shape.
-func (fr *frame) setSlotValue(idx int, val value.Value) {
-	cell := &fr.slots[idx]
-	cell.Value = val
-	cell.fastDirty = false
-	if idx >= len(fr.slotKinds) {
-		return
-	}
-	switch fr.slotKinds[idx] {
-	case fastSlotInt:
-		if val.Kind() == value.KindInt {
-			cell.fastInt = val.Int()
-		}
-	case fastSlotBool:
-		if val.Kind() == value.KindBool {
-			cell.fastBool = val.Bool()
-		}
-	}
-}
-
-// materializeSlot rebuilds Cell.Value after a fast path has updated only the
-// typed cache and marked the slot dirty. Generic code must call this before
-// reading Cell.Value.
-func (fr *frame) materializeSlot(idx int) {
-	if idx >= len(fr.slotKinds) || !fr.slots[idx].fastDirty {
-		return
-	}
-	cell := &fr.slots[idx]
-	switch fr.slotKinds[idx] {
-	case fastSlotInt:
-		cell.Value = value.MakeInt(cell.fastInt)
-	case fastSlotBool:
-		cell.Value = value.MakeBool(cell.fastBool)
-	}
-	cell.fastDirty = false
+func (fr *frame) bindCell(v ssa.Value, val value.Value) {
+	fr.setCell(v, val)
 }
 
 // callSSA invokes an SSA function with the given args. Returns the
@@ -400,17 +290,30 @@ func (p *program) newFrame(fn *ssa.Function, freeVars []*Cell) *frame {
 }
 
 func (p *program) newFrameWithLayout(fn *ssa.Function, freeVars []*Cell, layout *frameLayout) *frame {
-	// The layout is shared, but slots are per-call. A recursive call to the
-	// same function gets a different frame with the same slotIndex mapping.
-	return &frame{
-		fn:         fn,
-		block:      fn.Blocks[0],
-		slots:      make([]Cell, len(layout.index)),
-		slotKinds:  layout.slotKinds,
-		slotIndex:  layout.index,
-		blockPlans: layout.blockPlans,
-		freeVars:   freeVars,
+	// The layout is shared, but cells are per-call. A recursive call to the
+	// same function gets different storage with the same value index.
+	const inlineFrameCellCount = 8
+	type inlineFrame struct {
+		frame
+		storage [inlineFrameCellCount]Cell
 	}
+
+	var fr *frame
+	if len(layout.values) <= inlineFrameCellCount {
+		allocation := &inlineFrame{}
+		fr = &allocation.frame
+		fr.cellStorage = allocation.storage[:len(layout.values)]
+		copy(fr.cellStorage, layout.cellTemplate)
+		fr.cells = indexCellStore(layout, fr.cellStorage)
+	} else {
+		fr = &frame{}
+		fr.cellStorage, fr.cells = newCellStore(layout)
+	}
+	fr.fn = fn
+	fr.block = fn.Blocks[0]
+	fr.blockPlans = layout.blockPlans
+	fr.freeVars = freeVars
+	return fr
 }
 
 func (fr *frame) blockPlan() *blockPlan {

@@ -222,58 +222,35 @@ func ArithmeticSum() int {
 	if !sawFastBlock {
 		t.Fatal("frame layout did not cache a full fast block plan")
 	}
-	var sawIntSlot, sawBoolSlot bool
-	for _, kind := range layout.slotKinds {
-		switch kind {
-		case fastSlotInt:
-			sawIntSlot = true
-		case fastSlotBool:
-			sawBoolSlot = true
-		}
-	}
-	if !sawIntSlot {
-		t.Fatal("frame layout did not mark any typed int slots")
-	}
-	if !sawBoolSlot {
-		t.Fatal("frame layout did not mark any typed bool slots")
-	}
 }
 
-func TestTypedFastSlotMaterializesBeforeGenericRead(t *testing.T) {
-	const src = `
-func Identity(x int) int {
-	return x
-}
-`
+func TestFrameUsesOneCanonicalCellPerSSAValue(t *testing.T) {
+	const src = `func Identity(x int) int { return x }`
 	ctx := context.Background()
 	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	fn := unit.Package().Func("Identity")
-	if fn == nil {
-		t.Fatal("Identity not found")
-	}
 	prog := &program{}
 	layout := prog.frameLayout(fn)
-	if len(fn.Params) != 1 {
-		t.Fatalf("Identity params = %d, want 1", len(fn.Params))
-	}
-	param := fn.Params[0]
-	slot, ok := layout.index[param]
-	if !ok {
-		t.Fatal("parameter is not slot-indexed")
-	}
-	if got := layout.slotKinds[slot]; got != fastSlotInt {
-		t.Fatalf("parameter slot kind = %v, want fastSlotInt", got)
-	}
 	fr := prog.newFrameWithLayout(fn, nil, layout)
-	fr.setFastIntSlot(slot, 42)
+	param := fn.Params[0]
+	cell, ok := fr.cell(param)
+	if !ok {
+		t.Fatal("parameter has no canonical cell")
+	}
+	cell.Value = value.MakeInt(42)
 	got, err := prog.readValue(fr, param)
 	if err != nil {
 		t.Fatalf("readValue: %v", err)
 	}
-	expectInt(t, []value.Value{got}, 42)
+	if got.Int() != 42 {
+		t.Fatalf("readValue = %d, want 42", got.Int())
+	}
+	if fr.cells[param] != cell {
+		t.Fatal("cell lookup did not preserve identity")
+	}
 }
 
 func TestMakeFuncValueSupportsDirectAndReflectCalls(t *testing.T) {

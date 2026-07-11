@@ -49,10 +49,6 @@ type Cell struct {
 	Name  string
 	Type  types.Type
 	Value value.Value
-
-	fastInt   int64
-	fastBool  bool
-	fastDirty bool
 }
 
 // frame is the per-call activation record. It is unexported because

@@ -197,6 +197,66 @@ func Sum(n int) int {
 	expectInt(t, runProgram(t, src, "Sum", 1), 1)
 }
 
+func TestInterp_PhisUsePredecessorSnapshot(t *testing.T) {
+	const src = `
+func SwapLoop(n int) int {
+	a, b := 1, 2
+	for i := 0; i < n; i++ { a, b = b, a }
+	return a*10 + b
+}`
+	expectInt(t, runProgram(t, src, "SwapLoop", 1), 21)
+	expectInt(t, runProgram(t, src, "SwapLoop", 2), 12)
+}
+
+func TestInterp_ManyPhisUseOneSnapshot(t *testing.T) {
+	const src = `
+func Rotate9(n int) int {
+	a, b, c, d, e, f, g, h, j := 1, 2, 3, 4, 5, 6, 7, 8, 9
+	for k := 0; k < n; k++ {
+		a, b, c, d, e, f, g, h, j = b, c, d, e, f, g, h, j, a
+	}
+	return a*100000000 + b*10000000 + c*1000000 + d*100000 +
+		e*10000 + f*1000 + g*100 + h*10 + j
+}`
+	expectInt(t, runProgram(t, src, "Rotate9", 1), 234567891)
+}
+
+func TestInterp_AllocInLoopProducesFreshAddress(t *testing.T) {
+	const src = `
+func FreshAlloc() int {
+	ps := make([]*int, 3)
+	for i := 0; i < 3; i++ { x := i + 1; ps[i] = &x }
+	*ps[0] = 9
+	return *ps[1]*10 + *ps[2]
+}`
+	expectInt(t, runProgram(t, src, "FreshAlloc"), 23)
+}
+
+func TestInterp_UnifiedPlanPreservesMixedOperationOrder(t *testing.T) {
+	const src = `
+func Mixed(n int) int {
+	s := make([]int, 2)
+	x := n + 1
+	s[0] = x
+	wide := int64(s[0])
+	s[1] = int(wide) + 2
+	return s[0]*10 + s[1]
+}`
+	expectInt(t, runProgram(t, src, "Mixed", 3), 46)
+}
+
+func TestInterp_IndexAddrEscapesToCallee(t *testing.T) {
+	const src = `
+func bump(p *int) { *p = *p + 1 }
+func EscapingIndexAddr() int {
+	s := make([]int, 1)
+	s[0] = 41
+	bump(&s[0])
+	return s[0]
+}`
+	expectInt(t, runProgram(t, src, "EscapingIndexAddr"), 42)
+}
+
 func TestInterp_NestedLoops(t *testing.T) {
 	const src = `
 func MultiplyAll(n int) int {

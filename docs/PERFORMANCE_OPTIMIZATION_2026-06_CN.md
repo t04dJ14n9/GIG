@@ -268,6 +268,45 @@ Value -> reflect.Func -> reflect.Value.Call -> []reflect.Value -> callSSA
 当前内置 `stdlib/packages` 的 package-level functions 已全部带 DirectCall；
 `examples/custom/mydep/packages` 中的第三方示例包也可通过 gentool 生成同类 wrapper。
 
+## 可读执行模型重构基线（2026-07-11）
+
+以下数据用于约束可读 interpreter 执行模型重构。测量时 HEAD 为
+`672ca9a8d4533df5befa94d5201adef28e7dd67c`，工作区保留当时已有的未提交改动。
+环境为 Go 1.26.3、darwin/arm64、Apple M3 Pro（12 个逻辑 CPU、36 GiB 内存）。
+
+两个 benchmark 集合都使用 `-benchmem -count=5` 并成功通过。表中 `中位数`、
+`B/op` 和 `allocs/op` 均取五次样本的中位数；`3x 硬上限` 是后续重构验收使用的
+`3 * 中位数(ns/op)`。
+
+```bash
+go test ./tests -run '^$' \
+  -bench '^BenchmarkGig_(ArithmeticSum|FibRecursive|FibIterative|SliceSum|NestedLoops|BubbleSort|Sieve|ClosureCalls)$' \
+  -benchmem -count=5
+(cd benchmarks && go test -run '^$' \
+  -bench '^BenchmarkGig_(ArithSum|Fib25|BubbleSort|Sieve|ClosureCalls|ExtCallDirectCall|ExtCallReflect|ExtCallMethod|ExtCallMixed)$' \
+  -benchmem -count=5)
+```
+
+| Benchmark | 中位数 (ns/op) | 3x 硬上限 (ns/op) | B/op | allocs/op |
+| --- | ---: | ---: | ---: | ---: |
+| `tests/ArithmeticSum` | 38,651 | 115,953 | 968 | 8 |
+| `tests/FibIterative` | 2,858 | 8,574 | 1,032 | 8 |
+| `tests/FibRecursive` | 673,845 | 2,021,535 | 1,736,877 | 7,900 |
+| `tests/SliceSum` | 92,374 | 277,122 | 10,317 | 16 |
+| `tests/NestedLoops` | 49,370 | 148,110 | 1,704 | 8 |
+| `tests/BubbleSort` | 169,298 | 507,894 | 4,446 | 15 |
+| `tests/Sieve` | 169,802 | 509,406 | 11,065 | 9 |
+| `tests/ClosureCalls` | 542,285 | 1,626,855 | 729,878 | 4,997 |
+| `benchmarks/ArithSum` | 37,960 | 113,880 | 968 | 8 |
+| `benchmarks/Fib25` | 77,557,747 | 232,673,241 | 213,651,922 | 971,151 |
+| `benchmarks/BubbleSort` | 654,700 | 1,964,100 | 4,934 | 15 |
+| `benchmarks/Sieve` | 170,000 | 510,000 | 11,065 | 9 |
+| `benchmarks/ClosureCalls` | 539,168 | 1,617,504 | 729,904 | 4,997 |
+| `benchmarks/ExtCallDirectCall` | 720,676 | 2,162,028 | 460,541 | 21,394 |
+| `benchmarks/ExtCallReflect` | 433,740 | 1,301,220 | 240,004 | 9,676 |
+| `benchmarks/ExtCallMethod` | 463,872 | 1,391,616 | 309,666 | 12,652 |
+| `benchmarks/ExtCallMixed` | 355,634 | 1,066,902 | 248,643 | 9,708 |
+
 ## 阶段性性能提升记录
 
 下面的提升倍数用于记录优化方向和量级。`优化前` 来自本轮 SSA interpreter

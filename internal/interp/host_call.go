@@ -28,6 +28,19 @@ func callResolvedHostFunc(fn host.Function, args []value.Value) ([]value.Value, 
 	return fn.Call(args)
 }
 
+func callResolvedHostMethod(method host.Method, recv value.Value, args []value.Value) ([]value.Value, error) {
+	if direct, ok := method.(host.DirectMethod); ok {
+		result, handled, err := direct.CallDirect(recv, args)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			return []value.Value{result}, nil
+		}
+	}
+	return method.Call(recv, args)
+}
+
 // callHostFunc dispatches a body-less *ssa.Function to the host
 // environment. The function name and package path come from the SSA
 // node; the host bridge resolves them to a host.Function. Generated
@@ -94,7 +107,7 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 		return nil, err
 	}
 	if hm, ok := p.lookupHostMethod(rv, method); ok {
-		return hm.Call(dynRecv, args)
+		return callResolvedHostMethod(hm, dynRecv, args)
 	}
 	if fn := p.lookupInterpretedMethod(dynRecv, method); fn != nil {
 		// Go's spec lets a *T receiver call a value-receiver method
@@ -145,30 +158,6 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 		out[i] = v
 	}
 	return out, nil
-}
-
-func (p *program) invokeMethodOnDirect(receiver value.Value, method string, args []value.Value) (value.Value, bool, error) {
-	dynRecv, rv, err := p.hostReceiverReflect(receiver)
-	if err != nil {
-		return value.Value{}, false, err
-	}
-	hm, ok := p.lookupHostMethod(rv, method)
-	if !ok {
-		return value.Value{}, false, nil
-	}
-	dm, ok := hm.(host.DirectMethod)
-	if !ok {
-		return value.Value{}, false, nil
-	}
-	return dm.CallDirect(dynRecv, args)
-}
-
-func (p *program) invokeMethodOnDirectResult(receiver value.Value, method string, args []value.Value) ([]value.Value, bool, error) {
-	result, ok, err := p.invokeMethodOnDirect(receiver, method, args)
-	if err != nil || !ok {
-		return nil, ok, err
-	}
-	return []value.Value{result}, true, nil
 }
 
 func (p *program) hostReceiverReflect(receiver value.Value) (value.Value, reflect.Value, error) {

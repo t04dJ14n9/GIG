@@ -449,12 +449,6 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 			}
 			args[i] = v
 		}
-		if stored, ok, err := p.invokeMethodOnDirect(recvV, common.Method.Name(), args); err != nil {
-			return contNext, nil, err
-		} else if ok {
-			fr.setCell(instr, stored)
-			return contNext, nil, nil
-		}
 		results, err := p.invokeMethodOn(fr.ctx, recvV, common.Method.Name(), args)
 		if err != nil {
 			return contNext, nil, err

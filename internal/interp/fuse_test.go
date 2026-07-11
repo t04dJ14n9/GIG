@@ -110,7 +110,7 @@ func MakeSliceArray() int {
 	}
 }
 
-func TestFrameLayoutCachesFusableIndexAddrConsumers(t *testing.T) {
+func TestFrameLayoutKeepsIndexedOperationsGeneric(t *testing.T) {
 	const src = `
 func TouchSlice() int {
 	s := make([]int, 2)
@@ -125,102 +125,62 @@ func TouchSlice() int {
 		t.Fatalf("Build: %v", err)
 	}
 	fn := unit.Package().Func("TouchSlice")
-	if fn == nil {
-		t.Fatal("TouchSlice not found")
-	}
-
 	layout := (&program{}).frameLayout(fn)
-	if len(layout.fusedIndexAddr) == 0 {
-		t.Fatal("frame layout did not cache any fusable IndexAddr consumers")
-	}
-	var sawBlockPlan bool
-	var sawFastIndexAddr bool
-	for _, plan := range layout.blockPlans {
-		for _, consumer := range plan.fusedIndexAddrConsumers {
-			if consumer != nil {
-				sawBlockPlan = true
+	var indexedPairs int
+	for _, block := range layout.blocks {
+		for i, op := range block.ops {
+			if op.kind == planIntIndexLoad || op.kind == planIntIndexStore {
+				t.Fatalf("indexed operation emitted early kind %d", op.kind)
 			}
-		}
-		for _, instr := range plan.fastIndexAddrs {
-			if instr.kind != fastIndexNone {
-				sawFastIndexAddr = true
+			indexAddr, ok := op.instr.(*ssa.IndexAddr)
+			if !ok {
+				continue
 			}
+			if op.kind != planGeneric {
+				t.Fatalf("IndexAddr plan kind = %d, want planGeneric", op.kind)
+			}
+			if i+1 >= len(block.ops) {
+				t.Fatalf("IndexAddr %s has no planned consumer", indexAddr.Name())
+			}
+			consumer := block.ops[i+1]
+			if consumer.kind != planGeneric || !fusableIndexAddrConsumer(indexAddr, consumer.instr) {
+				t.Fatalf("IndexAddr %s consumer = (%d, %T), want separate planGeneric consumer", indexAddr.Name(), consumer.kind, consumer.instr)
+			}
+			indexedPairs++
 		}
 	}
-	if !sawBlockPlan {
-		t.Fatal("frame layout did not cache fusable consumers by block instruction index")
-	}
-	if !sawFastIndexAddr {
-		t.Fatal("frame layout did not cache typed int-slice IndexAddr plan")
-	}
-	for indexAddr, consumer := range layout.fusedIndexAddr {
-		if !fusableIndexAddrConsumer(indexAddr, consumer) {
-			t.Fatalf("cached non-fusable consumer %T for %s", consumer, indexAddr.Name())
-		}
+	if indexedPairs != 2 {
+		t.Fatalf("generic indexed pairs = %d, want 2", indexedPairs)
 	}
 }
 
-func TestFrameLayoutCachesFastIntLoopPlan(t *testing.T) {
-	const src = `
-func ArithmeticSum() int {
-	sum := 0
-	for i := 1; i <= 1000; i++ {
-		sum = sum + i
-	}
-	return sum
-}
-`
+func TestFrameLayoutBuildsOneOrderedIntLoopPlan(t *testing.T) {
+	const src = `func Sum() int { s := 0; for i := 1; i <= 1000; i++ { s += i }; return s }`
 	ctx := context.Background()
 	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	fn := unit.Package().Func("ArithmeticSum")
-	if fn == nil {
-		t.Fatal("ArithmeticSum not found")
-	}
-
+	fn := unit.Package().Func("Sum")
 	layout := (&program{}).frameLayout(fn)
-	if len(layout.blockPlans) != len(fn.Blocks) {
-		t.Fatalf("block plan table length = %d, want %d", len(layout.blockPlans), len(fn.Blocks))
-	}
-	var sawPhi, sawBinOp, sawIf, sawJump bool
-	var sawFastBlock bool
-	for _, plan := range layout.blockPlans {
-		if plan == nil {
-			continue
-		}
-		if len(plan.fastBlockOps) > 0 {
-			sawFastBlock = true
-		}
-		if len(plan.fastPhis) > 0 {
+	var sawPhi, sawInt, sawIf, sawJump bool
+	for _, block := range layout.blocks {
+		if len(block.phis) != 0 {
 			sawPhi = true
 		}
-		for _, instr := range plan.fastInstrs {
-			switch instr.kind {
-			case fastIntBinOp:
-				sawBinOp = true
-			case fastIf:
+		for _, op := range block.ops {
+			switch op.kind {
+			case planIntBinOp:
+				sawInt = true
+			case planIf:
 				sawIf = true
-			case fastJump:
+			case planJump:
 				sawJump = true
 			}
 		}
 	}
-	if !sawPhi {
-		t.Fatal("frame layout did not cache fast int phi plan")
-	}
-	if !sawBinOp {
-		t.Fatal("frame layout did not cache fast int binop plan")
-	}
-	if !sawIf {
-		t.Fatal("frame layout did not cache fast if plan")
-	}
-	if !sawJump {
-		t.Fatal("frame layout did not cache fast jump plan")
-	}
-	if !sawFastBlock {
-		t.Fatal("frame layout did not cache a full fast block plan")
+	if !sawPhi || !sawInt || !sawIf || !sawJump {
+		t.Fatalf("plan shapes phi=%v int=%v if=%v jump=%v", sawPhi, sawInt, sawIf, sawJump)
 	}
 }
 

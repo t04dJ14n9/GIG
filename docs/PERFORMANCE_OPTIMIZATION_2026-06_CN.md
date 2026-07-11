@@ -445,3 +445,51 @@ go test ./...
      `value.Value -> Go 参数` 转换的 reflect 成本。
    - method wrapper 目前仍靠少量手写 overlay，可以继续让 gentool 生成常见方法
      DirectMethod wrapper。
+
+## 可读执行模型重构后验收（2026-07-11）
+
+在同一台 Apple M3 Pro（12 个逻辑 CPU、36 GiB 内存）上，使用 Go 1.26.3、
+darwin/arm64，对上述基线的两个 benchmark 集合按顺序重新执行
+`-benchmem -count=5`。表中“后/前”是重构后 `ns/op` 中位数除以重构前中位数；
+小于 `1.0x` 表示自然加速。`B/op`、`allocs/op` 也分别取五次样本中位数，
+括号内为重构后减重构前的差值。
+
+| Benchmark | 重构前 ns/op | 重构后 ns/op | 后/前 | 3x 硬上限 | B/op 前 → 后 (Δ) | allocs/op 前 → 后 (Δ) | 结论 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| `tests/ArithmeticSum` | 38,651 | 55,993 | 1.449x | 115,953 | 968 → 1,336 (+368) | 8 → 9 (+1) | PASS |
+| `tests/FibIterative` | 2,858 | 3,495 | 1.223x | 8,574 | 1,032 → 1,336 (+304) | 8 → 9 (+1) | PASS |
+| `tests/FibRecursive` | 673,845 | 904,589 | 1.342x | 2,021,535 | 1,736,877 → 2,147,966 (+411,089) | 7,900 → 9,874 (+1,974) | PASS |
+| `tests/SliceSum` | 92,374 | 119,542 | 1.294x | 277,122 | 10,317 → 10,296 (-21) | 16 → 16 (0) | PASS |
+| `tests/NestedLoops` | 49,370 | 67,446 | 1.366x | 148,110 | 1,704 → 1,904 (+200) | 8 → 12 (+4) | PASS |
+| `tests/BubbleSort` | 169,298 | 223,679 | 1.321x | 507,894 | 4,446 → 5,555 (+1,109) | 15 → 15 (0) | PASS |
+| `tests/Sieve` | 169,802 | 218,022 | 1.284x | 509,406 | 11,065 → 11,490 (+425) | 9 → 13 (+4) | PASS |
+| `tests/ClosureCalls` | 542,285 | 632,458 | 1.166x | 1,626,855 | 729,878 → 1,098,026 (+368,148) | 4,997 → 5,995 (+998) | PASS |
+| `benchmarks/ArithSum` | 37,960 | 54,638 | 1.439x | 113,880 | 968 → 1,336 (+368) | 8 → 9 (+1) | PASS |
+| `benchmarks/Fib25` | 77,557,747 | 113,292,792 | 1.461x | 232,673,241 | 213,651,922 → 264,152,106 (+50,500,184) | 971,151 → 1,213,939 (+242,788) | PASS |
+| `benchmarks/BubbleSort` | 654,700 | 883,137 | 1.349x | 1,964,100 | 4,934 → 6,045 (+1,111) | 15 → 15 (0) | PASS |
+| `benchmarks/Sieve` | 170,000 | 220,133 | 1.295x | 510,000 | 11,065 → 11,490 (+425) | 9 → 13 (+4) | PASS |
+| `benchmarks/ClosureCalls` | 539,168 | 641,785 | 1.190x | 1,617,504 | 729,904 → 1,098,061 (+368,157) | 4,997 → 5,995 (+998) | PASS |
+| `benchmarks/ExtCallDirectCall` | 720,676 | 726,962 | 1.009x | 2,162,028 | 460,541 → 460,869 (+328) | 21,394 → 21,398 (+4) | PASS |
+| `benchmarks/ExtCallReflect` | 433,740 | 397,804 | 0.917x | 1,301,220 | 240,004 → 239,755 (-249) | 9,676 → 9,678 (+2) | PASS |
+| `benchmarks/ExtCallMethod` | 463,872 | 456,242 | 0.984x | 1,391,616 | 309,666 → 309,746 (+80) | 12,652 → 12,653 (+1) | PASS |
+| `benchmarks/ExtCallMixed` | 355,634 | 364,608 | 1.025x | 1,066,902 | 248,643 → 248,843 (+200) | 9,708 → 9,712 (+4) | PASS |
+
+17 个代表性 workload 全部低于精确的 `3.0x` 硬上限。最大耗时变化来自
+`benchmarks/Fib25`：`113,292,792 / 77,557,747 = 1.460754x`，仍比
+`232,673,241 ns/op` 上限低 `119,380,449 ns/op`。纯算术和递归 workload
+承担了主要可读性成本：用一个 canonical `Cell.Value` 取代 slot 与 typed dirty
+cache 后，`ArithSum`、`ArithmeticSum` 和 `Fib25` 的耗时约为基线的
+`1.44x`–`1.46x`，其中 `Fib25` 的分配中位数增加 `50,500,184 B/op` 和
+`242,788 allocs/op`；递归与闭包也体现了统一值表示带来的 materialization 成本。
+
+其余简化的代价保持在硬上限内：一个有序 block plan 与通用 Phi group 取代并行
+fast array 后，循环控制密集的 `NestedLoops`、`BubbleSort` 和 `Sieve` 为约
+`1.28x`–`1.37x`；一个 planned indexed pair 取代 `addrRef` side state 后，
+BubbleSort/Sieve 仍保持 KB 级分配。外部边界改为一次 `ExternalObject` lookup 加
+custom-registry fallback，并统一为一条 host-function 和一条 host-method dispatch
+路径后，四个外部调用 workload 为 `0.917x`–`1.025x`，说明这部分可读性合并没有
+形成显著回退。
+
+需要注意，现有 `ExtCallReflect`、`ExtCallMethod` 和 `ExtCallMixed` 实际会命中已注册
+的 `DirectMethod` wrapper，而不是最终的 raw-reflection fallback。因此这些比率衡量
+的是统一 host-dispatch 路径，不是纯 reflect-only method 路径。

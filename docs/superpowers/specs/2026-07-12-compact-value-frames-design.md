@@ -105,10 +105,9 @@ that every value which can be read or written has an index.
 
 ```go
 type frame struct {
-    fn            *ssa.Function
-    layout        *frameLayout
-    values        []value.Value
-    resultScratch []value.Value
+    fn     *ssa.Function
+    layout *frameLayout
+    values []value.Value
     // control-flow, iterator, defer, panic, and cancellation state
 }
 ```
@@ -198,25 +197,26 @@ storage does not escape.
 ### One-result caller storage
 
 `callSSA` remains the ordinary slice-returning entry point. An internal
-`callSSAInto` variant accepts optional result scratch storage. The callee frame
-owns that slice header for the duration of the call, and `runReturn` fills it:
+`callSSAInto` variant accepts optional result scratch storage:
 
 ```go
 func (p *program) callSSAInto(..., resultScratch []value.Value) ([]value.Value, error)
 ```
 
 The direct interpreted helper passes a local one-element result array when the
-callee signature has exactly one result. Zero results require no storage;
-multiple results retain the existing allocation path. Top-level calls, host
-calls, reflection, and the public API continue returning ordinary slices.
+callee signature has exactly one result. `callSSAInto` threads that slice
+through `runFrame`, `runPlannedOp`, and `visitInstr` to `runReturn`; it is never
+stored on the heap-allocated frame. Zero results require no storage; multiple
+results retain the existing allocation path. Top-level calls, host calls,
+reflection, and the public API continue returning ordinary slices.
 
 The result scratch lives only until the direct helper packs or stores the
 returned value. It is never retained by the frame, closure, program, or host
 environment after the helper returns.
 
-The panic/recover zero-result path uses the same frame result preparation
-helper so recovered calls preserve result arity without reintroducing a
-separate return model.
+The panic/recover zero-result path receives the same threaded result scratch so
+recovered calls preserve result arity without reintroducing a separate return
+model.
 
 ### Error and fallback behavior
 

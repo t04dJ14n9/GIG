@@ -37,8 +37,8 @@ flowchart TB
 
     subgraph Runtime["internal/interp"]
         Program["program<br/>ssaPkg/env/resolver/caches"]
-        Layout["cached frameLayout<br/>cell index + one blockPlan/block"]
-        Frame["frame<br/>block/prevBlock + cellStorage + cells pointers"]
+        Layout["cached frameLayout<br/>SSA value index + one blockPlan/block"]
+        Frame["frame<br/>block/prevBlock + compact values[]"]
         Loop["runFrame<br/>generic Phi group -> ordered operations"]
         Planned["optional plan kinds<br/>plain int/bool + safe plain []int pairs"]
         FuncCache["lookupHostFunc<br/>program.hostFuncs cache"]
@@ -215,8 +215,8 @@ obj : any      (string、complex128、reflect.Value、复合类型)
 原始类型（`bool`、`int*`、`uint*`、`float*`、`complex*`、`nil`）都直接
 就地存放 —— `num` 携带位、`obj` 保持 nil。字符串、复数和所有复合/
 reflect 类型走 `obj`。**可变性刻意没有放在 Value 里**：Value 一旦构造
-就是不可变的，"修改变量"意味着把新的 Value 装进周围的 `Cell`（这是
-解释器的存储层 —— 见 §5）。
+就是不可变的，"修改变量"意味着把新的 Value 装进 frame-local 或
+package-global 存储槽（见 §5）。
 
 `size` 字段记录原始 Go 宽度，因此从 `int8(5)` 构造的 Value，`Interface()`
 返回的是 `int8(5)` 而不是 `int(5)`。
@@ -268,37 +268,50 @@ type program struct {
     env         host.Environment
     converter   value.Converter
     resolver    *typeResolver
-    globals     map[*ssa.Global]*Cell
+    globalsMu   sync.RWMutex
+    globals     map[*ssa.Global]value.Value
     maxDepth    int
     hostFuncs   sync.Map
     hostMethods sync.Map
-    layouts     sync.Map
+    layouts     sync.Map // map[*ssa.Function]*frameLayout
 }
 ```
 
 `Program.Call(ctx, name, args)` —— `gig.Run` 调用的入口 —— 找到函数，
 recover 任何向上传播的 panic（转成 error），然后交给 `callSSA`。
 
-`callSSA` (`frame.go`) 是函数调用的生命周期：
+`callSSA` 是普通的 slice-returning 入口；它委托给 `callSSAInto`
+（`frame.go`）。后者是函数调用生命周期，并可接收调用方提供、且不会返回的
+单结果 sink：
 
 1. 检查递归深度（上限 `maxDepth`，1024）。
 2. 拒绝没有函数体的 SSA 函数（这些走 `callHostFunc`）。
 3. 读取缓存的 `frameLayout`，再构造每次调用的 `frame`：SSA 函数指针、
-   当前/前驱基本块、canonical `cellStorage`、指向同一批 cell 的 `cells`
-   身份索引（`ssa.Value → *Cell`）、闭包的自由变量 cell 列表。
+   当前/前驱基本块、layout 指针，以及唯一一段紧凑的
+   `values []value.Value`。
 4. 绑定形参与自由变量。
-5. 用新建的可寻址 `reflect.Value` 初始化每个 local 已经存在的 canonical
-   `Cell`，让 `Store`/`UnOp(MUL)` 可以取地址。
+5. 用新建的可寻址 `reflect.Value` 初始化每个 local 已经存在的 value slot，
+   让 `Store`/`UnOp(MUL)` 可以取地址。
 6. 安装 panic 处理器（见 §8）。
-7. `runFrame(caller, fr, depth)` —— 调度循环。
+7. `runFrame(caller, fr, depth, singleResult)` —— 调度循环。
 
 `frameLayout` 对每个 `*ssa.Function` 只编译一次并缓存在
-`program.layouts`：它保存确定的 cell index，以及每个 basic block 唯一的
-immutable `blockPlan`。每次调用拥有新的 `cellStorage []Cell`；`cells` map
-只保存指向这段 backing storage 的指针，因此一个 SSA value 只有一个
-canonical `Cell.Value`。没有 slot/fallback 双存储，也没有 typed dirty cache
-或延迟 materialization 协议；不超过 8 个 cell 的小 frame 会把 storage 内联
-到同一次 frame 分配中。
+`program.layouts`：其中 `index map[ssa.Value]int` 是唯一的 SSA 身份到 offset
+映射，由该函数的所有 invocation 共享且保持不可变；layout 还保存确定的
+`values []ssa.Value` 元数据，以及每个 basic block 唯一的 immutable
+`blockPlan`。每次调用只拥有一段新的紧凑 `[]value.Value`。不超过 8 个 indexed
+value 的小 frame 把 `[8]value.Value` 内联到同一次 frame 分配中；更大的 frame
+只分配一段精确长度的普通 slice。这里没有 per-invocation 的
+SSA-value-to-frame-slot lookup map、slot/fallback 双存储、typed dirty cache、
+延迟 materialization 协议或 frame pool。frame 仍保留 planned `Range`/`Next`
+所需的 `iters` iterator-control side table；它不是运行时 SSA value 到存储 slot
+的身份映射。
+
+package global 同样直接保存在 `map[*ssa.Global]value.Value` 中，并由
+`globalsMu` 保护。闭包把捕获绑定保存成 `[]value.Value`：`runMakeClosure`
+快照当前 binding value，因此标量 capture 是快照，捕获到的 pointer/address
+value 仍指向共享的可寻址存储。global 与 closure binding 都不再为运行时值
+增加 wrapper 对象。
 
 `runFrame` 对每个块只遍历这一份 plan。块入口的 `runBlockPhis` 只选择一次
 predecessor，把所有 Phi source 暂存到 `[]value.Value`（8 项以内使用栈缓冲），
@@ -319,12 +332,13 @@ referrer；命名 slice 类型保持 generic path。运行时若不是 native `[
 表示，仍顺序执行原始的两条指令。逃逸或无法证明安全的地址正常物化，frame
 中不再维护原来的 `addrRefs` 地址 side channel。
 
-这项可读性取舍已用 17 个代表性 workload 的五次中位数衡量：全部低于
-`3.0x` 预算，最慢是 `benchmarks/Fib25`，精确为重构前的 `1.460754x`。
-四项宿主调用为 `0.917x`–`1.025x`。当前 `ExtCallReflect`、
-`ExtCallMethod`、`ExtCallMixed` 会命中注册的 `DirectMethod` wrapper，因此
-这些比率衡量统一 host dispatch，而不是纯 raw-reflection method fallback。
-完整数据见 `PERFORMANCE_OPTIMIZATION_2026-06_CN.md`。
+最终紧凑 frame 在 Apple M3 Pro / Go 1.26.3 上的七样本 `Fib25` 中位数为
+`51,841,788 ns/op`、`100,999,547 B/op`、`242,793 allocs/op`；三项都通过
+设计 gate。17 个代表性 workload 全部低于各自精确 `3.0x` 上限，最紧的一项
+只使用 `0.495004x` 上限。当前 `ExtCallReflect`、
+`ExtCallMethod`、`ExtCallMixed` 会命中注册的 `DirectMethod` wrapper，因此这些
+结果衡量统一 host dispatch，而不是纯 raw-reflection method fallback。完整数据见
+`PERFORMANCE_OPTIMIZATION_2026-06_CN.md`。
 
 ### 指令处理 —— `ops.go`
 
@@ -345,19 +359,44 @@ referrer；命名 slice 类型保持 generic path。运行时若不是 native `[
 
 Phi 节点被编译成每个 `blockPlan` 的 leading group，并在块入口由
 `runBlockPhis` 解析；`visitInstr` 中遇到 Phi 时是防御性 no-op。优化 operation
-kind 位于 `plan.go`，与 generic handler 读写完全相同的 canonical cells。
+kind 位于 `plan.go`，与 generic handler 读写完全相同的 canonical value array。
 
-### Cell、可寻址性、reflect 桥接
+### 调用分类与调用方持有的存储
+
+`runCall` 是唯一的调用分类点：它为 interface invoke、builtin、无函数体的
+host function、直接解释的 SSA function，以及间接 interpreted/reflect function
+value 选择聚焦 helper。helper 复用 `readValue`/`readValuesInto`；需要打包结果的
+调用形态收敛到 `finishCall`：它先调用 `packResults` 把 0/1/N 元组变成一个
+`Value`，再把该值写入 instruction 的 frame slot；builtin 和直接单结果路径把
+已经是单值的结果直接写回。不存在第二套 call dispatcher。
+
+`runDirectInterpretedCall` 独占专用 scratch 路径。零参数使用 nil；一个参数使用
+调用方持有的局部 `[1]value.Value`；多个参数回退到精确长度的普通 slice。被调
+函数只有一个结果时，它把调用方局部 `value.Value` 的地址传给 `callSSAInto`；
+同一个不会返回的 sink 沿 `runFrame` 与 return/recover 路径传递，写入后不返回
+任何 aliasing result slice。直接 helper 再把这个局部值写回调用方 instruction
+slot。零结果或多结果继续走普通 slice-returning 路径与
+`finishCall`/`packResults`。sink 不会存入 frame、作为结果返回或在 helper 消费后
+被保留。
+
+分配行为需要准确区分：单参数 `oneArg` 数组和单结果 `oneResult value.Value`
+都保留在栈上，所有 `singleResult` 参数也都被编译器报告为 non-escaping。多值
+调用以及 host、interface、indirect、reflect fallback 继续使用普通 slice。实现中
+没有参数/结果 pool，也没有 frame-owned scratch 生命周期。
+
+### Value slot、可寻址性、reflect 桥接
 
 `composite.go` 的存储模型是这套实现里最微妙的一环：
 
-- *标量局部变量* 直接以 `Value` 形式放在 cell 里。读返回值；写则换新值。
+- *标量局部变量* 直接以 `Value` 形式放在 indexed frame slot 里。读返回值；
+  写则换新值。
 - *复合局部变量*（struct、array 等）以可寻址的 `reflect.Value` 形式存在
   —— 由 `reflect.New(rt).Elem()` 构造，用 `KindReflect` 保存。`Field` /
   `IndexAddr` / `Slice` 直接在它上面操作 —— 这就是怎么让 struct 的字段
   具备可寻址性的。
-- 来自 `Alloc` 的 *指针* 携带 cell 的地址 —— `addr.Addr()` —— 这样
-  `UnOp(MUL)` 与下游的 `Store` 才能解引用并修改原 cell。
+- 来自 `Alloc` 的 *指针* 携带可寻址的 reflected pointer —— `addr.Addr()` ——
+  这样即使 pointer `Value` 只放在普通 frame slot 里，`UnOp(MUL)` 与下游的
+  `Store` 仍能解引用并修改共享 pointee。
 
 关键辅助函数是 `reflectOf(v Value, hint reflect.Type)`：
 
@@ -489,8 +528,9 @@ typed fallback；这些分支用于兼容自定义 `PackageRegistry`。公共接
 `Converter.ToReflect` 构造 reflect 形式的实参，经由 `reflect.Value.Call`
 分发（变长且预先打包成 slice 时用 `CallSlice`）。
 对于没有函数体的 SSA call，`runCall` 只读一次参数、调用一次
-`callHostFunc`，再用一次 `packResults` 把 0/1/N 个返回值写回；direct
-selection 不再拥有并行的 caller-side 路径。
+`callHostFunc`，再调用一次 `finishCall`；`finishCall` 用 `packResults` 完成
+0/1/N 打包并执行 frame-slot writeback。direct selection 不再拥有并行的
+caller-side 路径。
 
 变长的处理有三种形态（见 `registry_bridge.go::reflectFunc.Call`）：
 
@@ -526,15 +566,15 @@ selection 不再拥有并行的 caller-side 路径。
    `receiverMatches` 的 `*ssa.Function`。
 4. 若找到：`adjustReceiverShape` 在 `*T → T` 之间脱引用、或在 `T → *T`
    之间取址，让 SSA 声明的 receiver 类型与传入值匹配。（Go 语义会自动
-   (de)ref，解释器需要做同样的事情，否则 cell 类型与 reflect.Set 目标
+   (de)ref，解释器需要做同样的事情，否则 runtime value 与 reflect.Set 目标
    会不一致。）然后 `callSSA` 跑函数体。
 5. 若没匹配的解释期方法：构造动态 receiver 的 reflect.Value，先试
    `MethodByName`，再试 `Addr().MethodByName`，再试 `Elem().MethodByName`。
    通过 `Converter.ToReflect` 打包参数，调用，解包返回值。
 
 interface invoke 在 `runCall` 中遵循同一规则：receiver/args 只读一次，
-`invokeMethodOn` 只调用一次，最后 `packResults` 一次。没有需要同步维护的
-独立 direct-function 或 direct-method 入口。
+`invokeMethodOn` 只调用一次，最后用一次 `finishCall` 完成打包和 frame-slot
+writeback。没有需要同步维护的独立 direct-function 或 direct-method 入口。
 
 `receiverMatches` 接受运行时类型与目标类型完全匹配，外加两种灵活性：
 
@@ -607,8 +647,8 @@ results, err = runFrame(...)
 - **跨嵌套调用的 re-panic。** 只有最外层的 `Program.Call` 会把 panic 转成
   error。中间帧 re-panic，让上层调用栈中链式 `recover()` 仍能消费。
 - **recover + 命名返回。** 当 `recover()` 成功时，跳进 `fn.Recover`
-  （SSA 生成的 recover 块），从那里读命名返回 cell —— 任何 deferred
-  函数都可能修改过这些 cell。没有这步，deferred mutator 内的 recover
+  （SSA 生成的 recover 块），从那里读命名返回 slot —— 任何 deferred
+  函数都可能修改过这些 slot。没有这步，deferred mutator 内的 recover
   就不会把更新带回调用方。
 
 `runPanic` (在 `type_assert.go`，名字归属是因为它共用了 AST 遍历的辅助
@@ -749,7 +789,7 @@ internal/frontend/builder.go            编译流水线
 internal/frontend/host_iface_check.go   G_iface_ban 检查
 value/value.go                          tagged-union Value、Converter
 internal/interp/engine.go               program、typeResolver、命名类型 tag
-internal/interp/frame.go                canonical cells、callSSA、runFrame、panic-recover
+internal/interp/frame.go                cached layout、紧凑 value frame、callSSAInto、runFrame、panic-recover
 internal/interp/plan.go                 cached layout、Phi group、有序 block operations
 internal/interp/ops.go                  generic 指令与 call 分发
 internal/interp/arith.go                BinOp、UnOp、标量转换

@@ -12,8 +12,9 @@ Gig 是一个可嵌入 Go 应用的动态规则解释执行引擎。它面向活
 Go Source -> go/parser -> go/types -> go/ssa -> direct SSA interpreter
 ```
 
-这样减少一层自定义 IR/bytecode 维护成本，同时用 canonical cell store、单一
-有序 block plan 和 DirectCall wrapper 保留经过测量的热点优化。
+这样减少一层自定义 IR/bytecode 维护成本，同时用共享的 cached layout、每次调用
+唯一一段紧凑 Value 存储、单一有序 block plan 和 DirectCall wrapper 保留经过
+测量的热点优化。
 
 ## 详细架构图
 
@@ -36,11 +37,13 @@ flowchart TB
 
     subgraph Runtime["SSA Interpreter Runtime"]
         Program["interp.program<br/>globals / resolver / host env / caches"]
-        Layout["cached frameLayout<br/>cell index + one blockPlan/block"]
-        CallSSA["callSSA<br/>frame 生命周期 / defer-panic-recover"]
-        Frame["frame<br/>block + prevBlock + cellStorage + cells pointers"]
+        Layout["cached frameLayout<br/>SSA value index + one blockPlan/block"]
+        CallSSA["callSSA / callSSAInto<br/>frame 生命周期 / defer-panic-recover"]
+        Frame["frame<br/>block + prevBlock + compact values[]<br/>small frame inline 8"]
         RunFrame["runFrame<br/>generic Phi group -> ordered operations"]
         OpsInterp["SSA 指令执行<br/>BinOp / If / Jump / Call / Store / Select"]
+        CallClass["runCall<br/>先分类 call kind"]
+        CallHelper["聚焦 call helper<br/>invoke / builtin / host / direct / indirect"]
         PlanKinds["optional plan kinds<br/>plain int/bool + safe plain []int pairs"]
     end
 
@@ -61,7 +64,7 @@ flowchart TB
         MethodDirect["LookupMethodDirectCall"]
         MethodResolved["callResolvedHostMethod<br/>direct handled/declined/error"]
         ReflectCall["generic/final fallback<br/>Function.Call / Method.Call / MethodByName"]
-        Pack["packResults<br/>0/1/N 返回值统一写回 SSA cell"]
+        Finish["finishCall<br/>packResults + frame-slot writeback"]
     end
 
     subgraph GenTool["依赖生成工具"]
@@ -89,23 +92,25 @@ flowchart TB
     Value --> Primitive
     Value --> ReflectBox
     OpsInterp --> Resolver
+    OpsInterp --> CallClass --> CallHelper
 
     Typecheck --> Env
     Pkgs --> Gen --> Generated --> Registry
     Gen --> Wrappers --> Generated
     Registry --> Env
 
-    OpsInterp --> Env
+    CallHelper --> Env
     Env --> ObjectLookup --> FuncResolved
-    OpsInterp --> MethodCache --> MethodEnv --> MethodDirect --> MethodResolved
+    CallHelper --> MethodCache --> MethodEnv --> MethodDirect --> MethodResolved
     Registry --> MethodDirect
-    OpsInterp --> ReflectCall
+    CallHelper --> ReflectCall
+    CallHelper --> CallSSA
     FuncResolved --> ReflectCall
     MethodResolved --> ReflectCall
-    FuncResolved --> Pack
-    MethodResolved --> Pack
-    ReflectCall --> Pack
-    Pack --> Value
+    FuncResolved --> Finish
+    MethodResolved --> Finish
+    ReflectCall --> Finish
+    Finish --> Value
 
     API --> NativeParity
     API --> Bench
@@ -133,6 +138,7 @@ sequenceDiagram
     User->>Gig: Run(funcName, args...)
     Gig->>I: []value.Value
     I->>I: callSSA -> cached layout -> Phi group + ordered operations
+    I->>I: runCall 单点分类 call kind
     alt package function
         I->>I: lookupHostFunc -> program.hostFuncs cache
         opt cache miss
@@ -158,7 +164,7 @@ sequenceDiagram
             I->>I: interpreted method / MethodByName -> []value.Value
         end
     end
-    I->>I: runCall -> packResults 一次写回 SSA cell
+    I->>I: finishCall: packResults -> frame slot
     I-->>Gig: value.Value
     Gig-->>User: any / error
 ```
@@ -169,9 +175,9 @@ sequenceDiagram
 
 2. **直接解释 SSA，降低自定义 VM 维护面。** 早期栈式 VM 已验证执行模型，但当前实现删除了自定义 bytecode/opcode 层，直接以 `ssa.BasicBlock` 和 `ssa.Instruction` 为执行对象；复杂 Go 语义如 Phi、闭包、defer/panic/recover、goroutine/channel/select 更贴近官方 IR。
 
-3. **在同一执行模型里分层，而不是维护平行引擎。** 每个 SSA value 只有一个 canonical `Cell.Value`；`cells` map 指向同一段 `cellStorage` backing array。每个 block 只有一条有序 operation list：通用 entry 走 `visitInstr`，plain `int`/`bool` 与可证明安全的相邻 plain `[]int` load/store pair 才使用可选 plan kind。Phi 在块入口通用地先暂存再提交，命名 slice、逃逸地址和其它形态继续走 reflect fallback。
+3. **在同一执行模型里分层，而不是维护平行引擎。** 每个函数只构建一次 immutable `frameLayout.index`；每次调用只拥有一段紧凑 `[]value.Value`，8 项以内内联在 frame 分配中，更大 frame 使用普通 slice。package global 直接保存 `value.Value`；闭包以 `[]value.Value` 快照 capture，地址值仍共享 pointee。每个 block 只有一条有序 operation list：通用 entry 走 `visitInstr`，plain `int`/`bool` 与可证明安全的相邻 plain `[]int` load/store pair 才使用可选 plan kind。Phi 在块入口通用地先暂存再提交，命名 slice、逃逸地址和其它形态继续走 reflect fallback。没有 per-invocation 的 SSA-value-to-frame-slot lookup map、frame pool 或第二套执行引擎；planned `Range`/`Next` 仍使用 `iters` side table 保存 iterator control state。
 
-4. **一次解析、单一路径的生成式宿主桥。** Package function/variable/constant/type 通过 `registryBridge.lookupObject` 从一个 `ExternalObject` 取得值、kind、类型元数据和可选 DirectCall；命中预期 kind 且能构造 adapter 时无需重开 registry，否则 function/variable/type 的 typed fallback 继续兼容自定义 `PackageRegistry`。Method wrapper 走独立的 `lookupHostMethod` cache → `Environment.LookupMethod` → `LookupMethodDirectCall` 流程，不使用 `ExternalObject`。`callResolvedHostFunc` 与 `callResolvedHostMethod` 各自在单一入口处理 direct handled/declined/error 和 generic call；`runCall` 只读一次参数并只打包一次结果。
+4. **一次分类、聚焦 helper 的调用路径。** `runCall` 先在唯一分类点区分 interface、builtin、host、直接解释和间接/reflect 调用，再选择对应 helper。直接解释调用由调用方持有单元素存储：`oneArg [1]value.Value` 与 `oneResult value.Value` 都留在栈上；`callSSAInto` 通过不会返回的 `*value.Value` sink 写入单结果，不返回 aliasing slice。多参数、多结果以及 host/reflect fallback 使用普通 slice。需要打包的 helper 最后进入 `finishCall`：`packResults` 只负责把 0/1/N 元组打包成一个 `Value`，frame-slot writeback 由 `finishCall` 完成。这里没有 scratch pool 或第二套 dispatcher。Package function/variable/constant/type 仍通过 `registryBridge.lookupObject` 从一个 `ExternalObject` 取得值、kind、类型元数据和可选 DirectCall；method wrapper 走独立的 `lookupHostMethod` cache → `Environment.LookupMethod` → `LookupMethodDirectCall` 流程。`callResolvedHostFunc` 与 `callResolvedHostMethod` 各自在单一入口处理 direct handled/declined/error 和 generic call。
 
 5. **宿主接口边界前置治理。** 对“解释期 struct 传给宿主非空 interface”这种需要动态合成 Go 类型的高风险场景，Gig 在前端用 G_iface_ban 给出确定性错误，而不是运行期隐式失败或不完整模拟。
 
@@ -181,19 +187,22 @@ sequenceDiagram
 
 ## 最新性能快照
 
-可读执行模型的验收环境为 Apple M3 Pro、Go `1.26.3`、darwin/arm64；重构前后
-分别以 `-benchmem -count=5` 取中位数。这里比较的是同一版本 Gig 重构前后，
-不是新的 Gig/Yaegi 横向测量。
+紧凑 Value frame 的验收环境为 Apple M3 Pro、Go `1.26.3`、darwin/arm64。
+`BenchmarkGig_Fib25` 的最终 gate 使用 `-benchmem -count=7` 中位数；代表性集合
+使用五样本中位数。这里比较的是同一版本 Gig 的执行模型演进，不是新的
+Gig/Yaegi 横向测量。
 
 | 集合 | 数量 | 重构后 / 重构前 `ns/op` | 结论 |
 | --- | ---: | ---: | --- |
-| root `tests` interpreter workloads | 8 | `1.166x`–`1.449x` | 全部低于 `3.0x` |
-| `benchmarks` core interpreter workloads | 5 | `1.190x`–`1.461x` | 全部低于 `3.0x` |
-| `benchmarks` external-call workloads | 4 | `0.917x`–`1.025x` | 基本持平 |
-| **总计** | **17** | worst `1.460754x` | **全部 PASS** |
+| root `tests` interpreter workloads | 8 | `0.630x`–`1.450x` | 全部低于 `3.0x` |
+| `benchmarks` core interpreter workloads | 5 | `0.665x`–`1.485x` | 全部低于 `3.0x` |
+| `benchmarks` external-call workloads | 4 | `1.015x`–`1.115x` | 全部低于 `3.0x` |
+| **总计** | **17** | worst `1.485011x` | **全部 PASS** |
 
-最慢项是 `benchmarks/Fib25`：`77,557,747 → 113,292,792 ns/op`，精确
-`1.460754x`，低于 `232,673,241 ns/op` 的 `3.0x` 上限。当前
+七样本 `Fib25` gate 的最终中位数为 `51,841,788 ns/op`、
+`100,999,547 B/op`、`242,793 allocs/op`；相对 fresh 设计基线分别改善
+65.48%、61.76% 和 80.00%，三项 gate 全部通过。17 项代表性 sweep 中上限占用
+最高的是 `benchmarks/ArithSum`，仍只使用精确 `3.0x` 上限的 49.5004%。当前
 `ExtCallReflect`、`ExtCallMethod`、`ExtCallMixed` 实际命中注册的
 `DirectMethod` wrapper，因此外部调用比率衡量的是统一 host-dispatch 路径，
 不是纯 raw-reflection method fallback。17 项的逐项耗时、分配变化和硬上限见
@@ -210,15 +219,15 @@ sequenceDiagram
 ### 推荐 bullets
 
 - 主导设计并落地兼容 Go 语法的动态规则解释执行引擎，面向活动平台规则高频变更、外部条件接入成本高的问题，以 `go/parser`、`go/types`、`go/ssa` 构建规则编译链路，替代硬编码和模板函数扩展模式，统一规则接入、发布、下线与超时治理。
-- 设计直接 SSA interpreter 执行模型，覆盖控制流、闭包、多返回值、defer/panic/recover、goroutine/channel/select、宿主方法调用等 Go 语义；以 canonical cell store、通用 staged Phi 和单一有序 block plan 降低概念分支，并仅为 plain `int`/`bool` 与安全 plain `[]int` pair 保留同计划内的可选优化。
-- 实现标准库与第三方 Go 包的生成式接入工具 `gig gen`，自动生成包注册代码和 DirectCall wrapper，支持多返回值与 variadic 参数拆包；外部对象一次解析后经统一 resolved host-call path 选择 direct/generic 调用，四项相关 workload 为重构前的 `0.917x`–`1.025x`。
+- 设计直接 SSA interpreter 执行模型，覆盖控制流、闭包、多返回值、defer/panic/recover、goroutine/channel/select、宿主方法调用等 Go 语义；以共享 immutable layout、每次调用唯一的紧凑 Value array、通用 staged Phi 和单一有序 block plan 降低概念分支，并仅为 plain `int`/`bool` 与安全 plain `[]int` pair 保留同计划内的可选优化。
+- 实现标准库与第三方 Go 包的生成式接入工具 `gig gen`，自动生成包注册代码和 DirectCall wrapper，支持多返回值与 variadic 参数拆包；外部对象一次解析后经统一 resolved host-call path 选择 direct/generic 调用，四项相关 workload 为原始记录的 `1.015x`–`1.115x`。
 - 构建可治理的宿主边界与安全模型：显式 registry 管理外部依赖，默认禁止 `unsafe`、`reflect`、`panic`，通过 G_iface_ban 阻断解释期类型冒充宿主非空 interface，并支持 `context.Context` 取消以满足在线规则执行的超时控制。
 - 构建基于 go:embed/AI harness 的语义回归流程，自动对比解释执行结果与原生 Go 执行结果，覆盖 AI 生成规则、外部包调用和解释器核心语义，降低规则引擎迭代中的回归风险。
-- 项目已接入活动平台约 10 个活动条件，将外部条件接入周期由数天缩短至约 30 分钟；17 项可读性重构 workload 全部控制在 `3.0x` 预算内，统一宿主调用的四项 workload 基本持平，验证了“Go 语法 + 可控解释执行 + 生成式宿主桥”的工程可行性。
+- 项目已接入活动平台约 10 个活动条件，将外部条件接入周期由数天缩短至约 30 分钟；紧凑 Value frame 将 `Fib25` 的耗时、字节和分配数相对 fresh 设计基线分别降低 65.48%、61.76% 和 80.00%，17 项 workload 全部控制在精确 `3.0x` 预算内，验证了“Go 语法 + 可控解释执行 + 生成式宿主桥”的工程可行性。
 
 ### 更短版本
 
 - 主导实现基于 Go SSA 的动态规则解释执行引擎，复用 Go 官方 parser/typechecker/SSA 保留 Go 开发体验，替代硬编码规则和模板函数扩展模式，将活动条件接入周期由数天缩短至约 30 分钟。
-- 设计直接 SSA interpreter、typed Value、canonical cell store、ordered block plan、DirectCall host bridge 等核心机制，支持控制流、闭包、多返回值、panic/recover、goroutine/channel/select 和第三方库调用。
+- 设计直接 SSA interpreter、typed Value、cached frame layout、compact per-call value storage、ordered block plan、DirectCall host bridge 等核心机制，支持控制流、闭包、多返回值、panic/recover、goroutine/channel/select 和第三方库调用。
 - 实现 `gig gen` 生成式外部包接入，自动生成标准库/第三方库注册代码与 DirectCall wrapper，并把一次对象解析、direct/generic 选择和 0/1/N 结果打包收敛到单一宿主调用路径。
 - 建立 AI harness/native parity 测试流程，自动对比解释执行与原生 Go 结果，保障 AI 生成规则和解释器语义一致性。

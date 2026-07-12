@@ -1020,3 +1020,184 @@ git commit -m "docs: explain compact value frames"
 ```
 
 Leave the branch unmerged and unpushed unless the user separately authorizes integration.
+
+### Task 7: Close final-review allocation and documentation findings
+
+**Files:**
+- Modify: `internal/interp/call_storage_test.go`
+- Modify: `internal/interp/frame.go`
+- Modify: `internal/interp/ops.go`
+- Modify: `internal/interp/plan.go`
+- Modify: `internal/interp/perf_test.go`
+- Modify: `docs/PERFORMANCE_OPTIMIZATION_2026-06_CN.md`
+- Modify: `docs/ARCHITECTURE.md`
+- Modify: `docs/ARCHITECTURE_CN.md`
+- Modify: `docs/GIG_RULE_ENGINE_OVERVIEW_CN.md`
+
+**Interfaces:**
+- Replaces the alias-returning `resultScratch []value.Value` parameter with a
+  non-returned `singleResult *value.Value` sink.
+- Preserves `callSSA`'s ordinary `[]value.Value` interface and every generic,
+  multi-result, host, reflect, panic, and recover fallback.
+- Clarifies that the prohibited per-invocation identity map is the removed
+  SSA-value-to-frame-slot map; the planned Range iterator side table remains.
+
+- [ ] **Step 1: Tighten tests before production changes**
+
+Update the single-result storage characterization so `callSSAInto` writes one
+result into a caller-provided `value.Value` and returns no aliasing slice. Lower
+`TestInterpDirectCallScratchAllocationsAreBounded` from `<= 220` allocations per
+100 direct calls to `<= 120`. Run both tests and record RED: the old slice
+signature fails the new characterization and the current implementation reports
+about 202 allocations.
+
+Replace the single-result test with:
+
+```go
+func TestCallSSAIntoWritesSingleResultSink(t *testing.T) {
+	p, fn := buildFrameValueFixture(t, `func Inc(x int) int { return x + 1 }`, "Inc")
+	var result value.Value
+	results, err := p.callSSAInto(
+		context.Background(), nil, fn,
+		[]value.Value{value.MakeInt(4)}, nil, 0, &result,
+	)
+	if err != nil {
+		t.Fatalf("callSSAInto: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("results = %v, want no aliasing result slice", results)
+	}
+	if result.Int() != 5 {
+		t.Fatalf("result = %v, want 5", result)
+	}
+}
+```
+
+Keep the multi-result test, but pass a sentinel sink and assert that the two
+ordinary results are returned while the sentinel is unchanged. In the
+allocation test, use:
+
+```go
+if allocs > 120 {
+	t.Fatalf("DirectCalls allocs/run = %.0f, want <= 120", allocs)
+}
+```
+
+Run:
+
+```bash
+go test ./internal/interp -run 'Test(CallSSAInto|InterpDirectCallScratchAllocationsAreBounded)' -count=1 -v
+```
+
+Expected RED: the new pointer argument does not compile against the old slice
+signature; after only the signature-compatible test edit, the allocation test
+reports approximately 202 and fails the 120 limit.
+
+- [ ] **Step 2: Thread a non-returned single-result sink**
+
+Change `callSSAInto`, `runFrame`, `runPlannedOp`, `visitInstr`, `runReturn`, and
+`zeroResultsFor` to accept `singleResult *value.Value`. For a one-result return
+with a non-nil sink, write the resolved value through the pointer and return a
+nil result slice. The recovered zero-result path writes the correct typed zero
+through the same sink. Generic calls pass nil and keep ordinary result slices.
+
+Use these signatures:
+
+```go
+func (p *program) callSSAInto(
+	ctx context.Context,
+	caller *frame,
+	fn *ssa.Function,
+	args []value.Value,
+	freeVars []value.Value,
+	depth int,
+	singleResult *value.Value,
+) (results []value.Value, err error)
+
+func (p *program) runFrame(
+	caller *frame, fr *frame, depth int, singleResult *value.Value,
+) ([]value.Value, error)
+
+func (p *program) runReturn(
+	fr *frame, instr *ssa.Return, singleResult *value.Value,
+) (continuation, []value.Value, error)
+```
+
+Thread the same pointer through `runPlannedOp` and `visitInstr`. The
+single-result branch in `runReturn` is:
+
+```go
+if len(instr.Results) == 1 && singleResult != nil {
+	resolved, err := p.readValue(fr, instr.Results[0])
+	if err != nil {
+		return contNext, nil, err
+	}
+	*singleResult = resolved
+	fr.block = nil
+	return contReturn, nil, nil
+}
+```
+
+For other arities, allocate the ordinary result slice exactly as before.
+Remove `prepareValueSlice`; after the sink replaces scratch reuse, the helper
+would only obscure an ordinary `make([]value.Value, n)`.
+
+In `zeroResultsFor`, resolve a single typed zero directly into a non-nil sink
+and return nil. Zero arity returns nil; multiple arity allocates and fills the
+ordinary slice.
+
+In `runDirectInterpretedCall`, declare one local `value.Value`, pass its address
+only for a one-result interpreted callee, and store that value directly in the
+call instruction's frame slot. Do not store the pointer on `frame`, return it,
+pool it, or add another dispatcher.
+
+```go
+if fn.Signature.Results().Len() == 1 {
+	var oneResult value.Value
+	_, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, &oneResult)
+	if err != nil {
+		return contNext, nil, err
+	}
+	fr.setValue(instr, oneResult)
+	return contNext, nil, nil
+}
+```
+
+- [ ] **Step 3: Prove behavior and non-escape**
+
+```bash
+gofmt -w internal/interp/frame.go internal/interp/ops.go internal/interp/plan.go internal/interp/call_storage_test.go internal/interp/perf_test.go
+go test ./internal/interp -run 'Test(CallSSAInto|InterpDirectCallScratchAllocationsAreBounded|ReadableRunCall|Recover|Panic|MaxDepth)' -count=1
+go test -race ./internal/interp ./tests -count=1
+go test -gcflags='-m=2' ./internal/interp 2>&1 | rg 'oneArg|oneResult|singleResult|escapes to heap|moved to heap'
+go vet ./internal/interp
+git diff --check
+```
+
+Expected: the focused allocation count is at most 120; neither `oneArg` nor
+`oneResult` is reported as escaping or moving to the heap; behavior, race, vet,
+and diff checks pass.
+
+- [ ] **Step 4: Re-measure performance**
+
+Repeat the exact Task 5 seven-sample Fib25 gate and both five-sample 17-workload
+groups. All three compact gates and all 17 original ceilings must still pass.
+Append the final medians and the 202-to-final allocation-test delta to the
+performance record; do not replace the preserved earlier evidence.
+
+- [ ] **Step 5: Correct final documentation findings**
+
+Update all three architecture documents to describe a non-returned one-result
+sink that stays on the stack. Qualify "no per-invocation identity map" as no
+SSA-value-to-frame-slot lookup map, because the approved frame design explicitly
+retains iterator control state. In `docs/GIG_RULE_ENGINE_OVERVIEW_CN.md`, put
+`runCall` classification before helper selection and attribute frame-slot
+writeback to `finishCall` rather than `packResults` alone.
+
+- [ ] **Step 6: Commit, verify, and re-review**
+
+Commit the focused code/test/performance remediation separately, then commit
+the already reviewed three-document architecture patch. Rerun Task 6's complete
+current-toolchain and Go 1.23.1 matrix on the exact candidate, prove the user
+dirty diff is unchanged, and give fresh reviewers the full `6d17392..HEAD`
+range. Fix every Critical/Important finding before completion.

@@ -194,27 +194,30 @@ arguments allocate an exactly sized slice. Other call kinds keep their current
 allocation behavior unless the compiler can independently prove their scratch
 storage does not escape.
 
-### One-result caller storage
+### One-result caller sink
 
 `callSSA` remains the ordinary slice-returning entry point. An internal
-`callSSAInto` variant accepts optional result scratch storage:
+`callSSAInto` variant accepts an optional non-returned single-result sink:
 
 ```go
-func (p *program) callSSAInto(..., resultScratch []value.Value) ([]value.Value, error)
+func (p *program) callSSAInto(..., singleResult *value.Value) ([]value.Value, error)
 ```
 
-The direct interpreted helper passes a local one-element result array when the
-callee signature has exactly one result. `callSSAInto` threads that slice
+The direct interpreted helper passes the address of a local `value.Value` when
+the callee signature has exactly one result. `callSSAInto` threads that sink
 through `runFrame`, `runPlannedOp`, and `visitInstr` to `runReturn`; it is never
-stored on the heap-allocated frame. Zero results require no storage; multiple
-results retain the existing allocation path. Top-level calls, host calls,
-reflection, and the public API continue returning ordinary slices.
+stored on the heap-allocated frame and is never returned as an aliasing slice.
+`runReturn` and the recovered zero-result path write directly into the sink and
+return no result slice. Zero results require no storage; multiple results retain
+the existing allocation path. Top-level calls, host calls, reflection, and the
+public API continue returning ordinary slices.
 
-The result scratch lives only until the direct helper packs or stores the
-returned value. It is never retained by the frame, closure, program, or host
-environment after the helper returns.
+The result sink lives only until the direct helper stores the value in the
+call instruction's frame slot. It is never retained by the frame, closure,
+program, or host environment after the helper returns. Escape analysis and a
+focused allocation test must prove that this local remains stack-resident.
 
-The panic/recover zero-result path receives the same threaded result scratch so
+The panic/recover zero-result path receives the same threaded result sink so
 recovered calls preserve result arity without reintroducing a separate return
 model.
 
@@ -299,14 +302,16 @@ storage and caller-result interfaces.
 
 The completed implementation must:
 
-- have one SSA identity map per cached function and none per invocation;
+- have one SSA-value-to-frame-slot identity map per cached function and none
+  per invocation; iterator control state is not a frame-value lookup map and
+  remains the explicitly planned `iters` side table;
 - store exactly one mutable `value.Value` per indexed frame value;
 - contain no `Cell` type, `cellStorage`, `cells`, `cellTemplate`,
   `newCellStore`, or `indexCellStore` residue;
 - represent globals and closure bindings directly as values;
 - keep one call-classification point and one result-packing implementation;
 - isolate the one-argument/one-result optimization inside the direct
-  interpreted-call helper;
+  interpreted-call helper, with both local values proven non-escaping;
 - preserve generic slice fallbacks for larger call shapes; and
 - reduce conceptual branches and lifecycle state while meeting every
   correctness and performance gate above.

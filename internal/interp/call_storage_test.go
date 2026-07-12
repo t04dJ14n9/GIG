@@ -44,33 +44,36 @@ func TestReadValuesIntoAllocatesForLargerShape(t *testing.T) {
 	}
 }
 
-func TestCallSSAIntoUsesSingleResultScratch(t *testing.T) {
+func TestCallSSAIntoWritesSingleResultSink(t *testing.T) {
 	p, fn := buildFrameValueFixture(t, `func Inc(x int) int { return x + 1 }`, "Inc")
-	var scratch [1]value.Value
-	results, err := p.callSSAInto(context.Background(), nil, fn, []value.Value{value.MakeInt(4)}, nil, 0, scratch[:0])
+	var result value.Value
+	results, err := p.callSSAInto(
+		context.Background(), nil, fn,
+		[]value.Value{value.MakeInt(4)}, nil, 0, &result,
+	)
 	if err != nil {
 		t.Fatalf("callSSAInto: %v", err)
 	}
-	if len(results) != 1 || results[0].Int() != 5 {
-		t.Fatalf("results = %v, want 5", results)
+	if len(results) != 0 {
+		t.Fatalf("results = %v, want no aliasing result slice", results)
 	}
-	if &results[0] != &scratch[0] {
-		t.Fatal("single result did not use caller scratch")
+	if result.Int() != 5 {
+		t.Fatalf("result = %v, want 5", result)
 	}
 }
 
 func TestCallSSAIntoAllocatesForMultiResult(t *testing.T) {
 	p, fn := buildFrameValueFixture(t, `func Pair(x int) (int, int) { return x, x + 1 }`, "Pair")
-	var scratch [1]value.Value
-	results, err := p.callSSAInto(context.Background(), nil, fn, []value.Value{value.MakeInt(7)}, nil, 0, scratch[:0])
+	sentinel := value.MakeInt(99)
+	results, err := p.callSSAInto(context.Background(), nil, fn, []value.Value{value.MakeInt(7)}, nil, 0, &sentinel)
 	if err != nil {
 		t.Fatalf("callSSAInto: %v", err)
 	}
 	if len(results) != 2 || results[0].Int() != 7 || results[1].Int() != 8 {
 		t.Fatalf("results = %v, want [7 8]", results)
 	}
-	if &results[0] == &scratch[0] {
-		t.Fatal("multi result incorrectly used one-slot scratch")
+	if sentinel.Int() != 99 {
+		t.Fatalf("sentinel = %v, want unchanged 99", sentinel)
 	}
 }
 

@@ -20,13 +20,13 @@ import (
 // visitInstr dispatches one SSA instruction. The triple return is
 // (continuation, return-values-when-Return, error). Only contReturn
 // uses the value slice; otherwise it is nil.
-func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, depth int, resultScratch []value.Value) (continuation, []value.Value, error) {
+func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, depth int, singleResult *value.Value) (continuation, []value.Value, error) {
 	switch x := instr.(type) {
 	case *ssa.DebugRef:
 		return contNext, nil, nil
 
 	case *ssa.Return:
-		return p.runReturn(fr, x, resultScratch)
+		return p.runReturn(fr, x, singleResult)
 
 	case *ssa.If:
 		return p.runIf(fr, x)
@@ -222,8 +222,22 @@ func (p *program) constToValue(c *ssa.Const) (value.Value, error) {
 
 // --- per-instruction runners ------------------------------------------------
 
-func (p *program) runReturn(fr *frame, instr *ssa.Return, resultScratch []value.Value) (continuation, []value.Value, error) {
-	results := prepareValueSlice(resultScratch, len(instr.Results))
+func (p *program) runReturn(
+	fr *frame, instr *ssa.Return, singleResult *value.Value,
+) (continuation, []value.Value, error) {
+	if len(instr.Results) == 1 && singleResult != nil {
+		resolved, err := p.readValue(fr, instr.Results[0])
+		if err != nil {
+			return contNext, nil, err
+		}
+		*singleResult = resolved
+		fr.block = nil
+		return contReturn, nil, nil
+	}
+	var results []value.Value
+	if len(instr.Results) > 0 {
+		results = make([]value.Value, len(instr.Results))
+	}
 	for i, result := range instr.Results {
 		resolved, err := p.readValue(fr, result)
 		if err != nil {
@@ -539,12 +553,12 @@ func (p *program) runDirectInterpretedCall(fr *frame, instr *ssa.Call, fn *ssa.F
 	}
 
 	if fn.Signature.Results().Len() == 1 {
-		var oneResult [1]value.Value
-		results, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, oneResult[:0])
+		var oneResult value.Value
+		_, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, &oneResult)
 		if err != nil {
 			return contNext, nil, err
 		}
-		fr.setValue(instr, results[0])
+		fr.setValue(instr, oneResult)
 		return contNext, nil, nil
 	}
 

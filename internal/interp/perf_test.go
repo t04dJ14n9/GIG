@@ -176,7 +176,7 @@ func DirectCalls() int {
 	// Keep this proportional guard loose enough for toolchain accounting
 	// differences while rejecting one heap allocation for each local argument
 	// and result scratch slot at every direct interpreted call.
-	if allocs > 220 {
-		t.Fatalf("DirectCalls allocs/run = %.0f, want <= 220", allocs)
+	if allocs > 120 {
+		t.Fatalf("DirectCalls allocs/run = %.0f, want <= 120", allocs)
 	}
 }

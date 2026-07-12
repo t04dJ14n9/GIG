@@ -101,7 +101,15 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 	return p.callSSAInto(ctx, caller, fn, args, freeVars, depth, nil)
 }
 
-func (p *program) callSSAInto(ctx context.Context, caller *frame, fn *ssa.Function, args []value.Value, freeVars []value.Value, depth int, resultScratch []value.Value) (results []value.Value, err error) {
+func (p *program) callSSAInto(
+	ctx context.Context,
+	caller *frame,
+	fn *ssa.Function,
+	args []value.Value,
+	freeVars []value.Value,
+	depth int,
+	singleResult *value.Value,
+) (results []value.Value, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -173,7 +181,7 @@ func (p *program) callSSAInto(ctx context.Context, caller *frame, fn *ssa.Functi
 			if fr.fn.Recover != nil {
 				fr.block = fr.fn.Recover
 				fr.prevBlock = nil
-				rs, rerr := p.runFrame(caller, fr, depth, resultScratch)
+				rs, rerr := p.runFrame(caller, fr, depth, singleResult)
 				if rerr != nil {
 					err = rerr
 					results = nil
@@ -183,12 +191,12 @@ func (p *program) callSSAInto(ctx context.Context, caller *frame, fn *ssa.Functi
 				err = nil
 				return
 			}
-			results, _ = p.zeroResultsFor(fn, resultScratch)
+			results, _ = p.zeroResultsFor(fn, singleResult)
 			err = nil
 		}
 	}()
 
-	results, err = p.runFrame(caller, fr, depth, resultScratch)
+	results, err = p.runFrame(caller, fr, depth, singleResult)
 	return results, err
 }
 
@@ -228,22 +236,11 @@ func (fr *frame) blockPlan() *blockPlan {
 	return nil
 }
 
-// prepareValueSlice returns n result slots, reusing scratch when it fits.
-func prepareValueSlice(scratch []value.Value, n int) []value.Value {
-	if n == 0 {
-		return nil
-	}
-	if cap(scratch) < n {
-		return make([]value.Value, n)
-	}
-	return scratch[:n]
-}
-
 // zeroResultsFor returns the function's zero result tuple (one
 // value.Value per Results entry). Used by the panic-recover path
 // when a deferred recover() consumes a panic and the function would
 // otherwise leak nil results to the caller.
-func (p *program) zeroResultsFor(fn *ssa.Function, resultScratch []value.Value) ([]value.Value, error) {
+func (p *program) zeroResultsFor(fn *ssa.Function, singleResult *value.Value) ([]value.Value, error) {
 	sig := fn.Signature
 	if sig == nil {
 		return nil, nil
@@ -252,7 +249,15 @@ func (p *program) zeroResultsFor(fn *ssa.Function, resultScratch []value.Value) 
 	if res == nil || res.Len() == 0 {
 		return nil, nil
 	}
-	out := prepareValueSlice(resultScratch, res.Len())
+	if res.Len() == 1 && singleResult != nil {
+		v, err := p.converter.Zero(res.At(0).Type(), p.resolver)
+		if err != nil {
+			return nil, err
+		}
+		*singleResult = v
+		return nil, nil
+	}
+	out := make([]value.Value, res.Len())
 	for i := 0; i < res.Len(); i++ {
 		v, err := p.converter.Zero(res.At(i).Type(), p.resolver)
 		if err != nil {
@@ -266,7 +271,9 @@ func (p *program) zeroResultsFor(fn *ssa.Function, resultScratch []value.Value) 
 // runFrame is the dispatch loop. It walks blocks until a Return is
 // hit or an error escapes. Control-flow instructions update fr.block and
 // fr.prevBlock; value-producing instructions update canonical value storage.
-func (p *program) runFrame(caller *frame, fr *frame, depth int, resultScratch []value.Value) ([]value.Value, error) {
+func (p *program) runFrame(
+	caller *frame, fr *frame, depth int, singleResult *value.Value,
+) ([]value.Value, error) {
 	if err := fr.checkContextNow(); err != nil {
 		return nil, err
 	}
@@ -285,7 +292,7 @@ blocks:
 			if err := fr.checkContext(); err != nil {
 				return nil, err
 			}
-			contState, ret, err := p.runPlannedOp(caller, fr, op, depth, resultScratch)
+			contState, ret, err := p.runPlannedOp(caller, fr, op, depth, singleResult)
 			if err != nil {
 				return nil, err
 			}

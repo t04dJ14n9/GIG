@@ -131,11 +131,11 @@ function setSource(source) {
 
 function scheduleAnalysis(delay = 280) {
   window.clearTimeout(state.timer);
-  state.timer = window.setTimeout(analyze, delay);
+  const sequence = ++state.requestSequence;
+  state.timer = window.setTimeout(() => analyze(sequence), delay);
 }
 
-async function analyze() {
-  const sequence = ++state.requestSequence;
+async function analyze(sequence) {
   setStatus("Analyzing current source…", "busy");
   ui.output.setAttribute("aria-busy", "true");
   try {

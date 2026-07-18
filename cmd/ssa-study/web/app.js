@@ -1,4 +1,5 @@
-import { renderAST, renderDiagnostics, renderSSAPlaceholder, renderTokens, renderTypes } from "/renderers.js";
+import { renderAST, renderDiagnostics, renderSSA, renderTokens, renderTypes } from "/renderers.js";
+import { gradePrediction, recordAttempt } from "/model.js";
 
 const STORAGE_KEY = "ssa-study-progress-v1";
 const stages = ["tokens", "ast", "types", "ssa"];
@@ -10,9 +11,11 @@ const state = {
   result: null,
   selectedRange: null,
   selectedAST: -1,
+  selectedFunction: "",
   requestSequence: 0,
   timer: 0,
   progress: loadProgress(),
+  quizState: { selected: -1, feedback: "", locked: false, correct: false },
 };
 
 const ui = {
@@ -66,9 +69,7 @@ function bindEvents() {
     const button = event.target.closest("button[data-stage]");
     if (button) chooseStage(button.dataset.stage);
   });
-  ui.reset.addEventListener("click", () => {
-    if (state.lesson) setSource(state.lesson.source);
-  });
+  ui.reset.addEventListener("click", resetLesson);
   ui.freeLab.addEventListener("click", enterFreeLab);
 }
 
@@ -97,13 +98,16 @@ function loadLesson(id) {
   state.lesson = lesson;
   state.freeLab = false;
   state.stage = lesson.stage;
+  state.selectedFunction = "";
+  const completed = state.progress.completed.includes(lesson.id);
+  state.quizState = { selected: completed ? lesson.quiz.answer : -1, feedback: completed ? lesson.quiz.correct : "", locked: completed, correct: completed };
   ui.kicker.textContent = `Lesson ${lesson.number} / ${lesson.kicker}`;
   ui.title.textContent = lesson.title;
   ui.explanation.textContent = lesson.explanation;
   ui.freeLab.setAttribute("aria-pressed", "false");
   setSource(lesson.source);
   renderLessonRail();
-  renderQuizPlaceholder();
+  renderQuiz();
   chooseStage(lesson.stage);
 }
 
@@ -177,7 +181,12 @@ function renderStage() {
   if (state.stage === "tokens") renderTokens(ui.output, state.result, state.selectedRange, onSelect);
   if (state.stage === "ast") renderAST(ui.output, state.result, state.selectedAST, onSelect);
   if (state.stage === "types") renderTypes(ui.output, state.result, state.selectedAST, onSelect);
-  if (state.stage === "ssa") renderSSAPlaceholder(ui.output, state.result);
+  if (state.stage === "ssa") {
+    renderSSA(ui.output, state.result, state.selectedAST, onSelect, state.selectedFunction, (name) => {
+      state.selectedFunction = name;
+      renderStage();
+    });
+  }
 }
 
 function selectRange(range, astID) {
@@ -203,12 +212,112 @@ function paintSource() {
   ui.mirror.append(mark, document.createTextNode(source.slice(range.end) + (source.endsWith("\n") ? " " : "\n ")));
 }
 
-function renderQuizPlaceholder() {
+function renderQuiz() {
   ui.quiz.replaceChildren();
-  const node = document.createElement("p");
-  node.className = "quiz-placeholder";
-  node.textContent = "Prediction checkpoint will unlock beside the completed control-flow explorer.";
-  ui.quiz.append(node);
+  if (!state.lesson || state.freeLab) return;
+  const quiz = state.lesson.quiz;
+  const heading = document.createElement("div");
+  heading.className = "quiz-heading";
+  const text = document.createElement("div");
+  const kicker = document.createElement("p");
+  kicker.className = "eyebrow";
+  kicker.textContent = "Prediction checkpoint";
+  const title = document.createElement("h2");
+  title.id = "quiz-heading";
+  title.textContent = quiz.prompt;
+  text.append(kicker, title);
+  const attempts = document.createElement("span");
+  attempts.className = "attempt-count";
+  const count = state.progress.attempts[state.lesson.id] || 0;
+  attempts.textContent = `${count} attempt${count === 1 ? "" : "s"}`;
+  heading.append(text, attempts);
+
+  const fieldset = document.createElement("fieldset");
+  fieldset.className = "quiz-options";
+  fieldset.disabled = state.quizState.locked;
+  const legend = document.createElement("legend");
+  legend.className = "sr-only";
+  legend.textContent = quiz.prompt;
+  fieldset.append(legend);
+  quiz.options.forEach((option, index) => {
+    const label = document.createElement("label");
+    label.className = "quiz-option";
+    if (state.quizState.locked && index === quiz.answer) label.classList.add("is-answer");
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = `quiz-${state.lesson.id}`;
+    input.value = String(index);
+    input.checked = state.quizState.selected === index;
+    input.addEventListener("change", () => { state.quizState.selected = index; });
+    const marker = span("option-marker", String.fromCharCode(65 + index));
+    label.append(input, marker, document.createTextNode(option));
+    fieldset.append(label);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "quiz-actions";
+  const check = document.createElement("button");
+  check.type = "button";
+  check.className = "primary-button";
+  check.textContent = state.quizState.correct ? "Prediction confirmed" : "Check prediction";
+  check.disabled = state.quizState.locked;
+  check.addEventListener("click", checkPrediction);
+  const reveal = document.createElement("button");
+  reveal.type = "button";
+  reveal.className = "secondary-button";
+  reveal.textContent = "Show explanation";
+  reveal.disabled = state.quizState.locked;
+  reveal.addEventListener("click", revealPrediction);
+  actions.append(check, reveal);
+
+  const feedback = document.createElement("p");
+  feedback.className = state.quizState.correct ? "quiz-feedback is-correct" : "quiz-feedback";
+  feedback.setAttribute("role", "status");
+  feedback.textContent = state.quizState.feedback || "Choose first. Prediction makes the transformation easier to remember.";
+  ui.quiz.append(heading, fieldset, actions, feedback);
+}
+
+function checkPrediction() {
+  if (!state.lesson || state.quizState.selected < 0) {
+    state.quizState.feedback = "Choose one answer before checking the prediction.";
+    renderQuiz();
+    return;
+  }
+  const grade = gradePrediction(state.lesson.quiz, state.quizState.selected);
+  state.progress = recordAttempt(state.progress, state.lesson.id, grade.correct);
+  state.quizState.feedback = grade.feedback;
+  state.quizState.correct = grade.correct;
+  state.quizState.locked = grade.correct;
+  saveProgress();
+  renderLessonRail();
+  renderQuiz();
+}
+
+function revealPrediction() {
+  if (!state.lesson) return;
+  state.quizState.selected = state.lesson.quiz.answer;
+  state.quizState.feedback = `${state.lesson.quiz.correct} The answer is now revealed; reset the lesson to retry from a blank checkpoint.`;
+  state.quizState.locked = true;
+  renderQuiz();
+}
+
+function resetLesson() {
+  if (!state.lesson) return;
+  state.progress = {
+    version: 1,
+    completed: state.progress.completed.filter((id) => id !== state.lesson.id),
+    attempts: { ...state.progress.attempts },
+  };
+  delete state.progress.attempts[state.lesson.id];
+  state.quizState = { selected: -1, feedback: "", locked: false, correct: false };
+  saveProgress();
+  renderLessonRail();
+  renderQuiz();
+  setSource(state.lesson.source);
+}
+
+function saveProgress() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.progress));
 }
 
 function setStatus(message, mode) {

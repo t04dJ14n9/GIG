@@ -1,3 +1,5 @@
+import { cfgEdges } from "/model.js";
+
 function make(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -24,10 +26,11 @@ function selectableRow(kind, text, range, selected, onSelect) {
 }
 
 export function renderTokens(output, result, selected, onSelect) {
+  const tokens = result.tokens || [];
   output.replaceChildren();
-  output.append(make("p", "stage-summary", `${result.tokens.length} scanner tokens. Empty rows are automatically inserted semicolons.`));
+  output.append(make("p", "stage-summary", `${tokens.length} scanner tokens. Empty rows are automatically inserted semicolons.`));
   const list = make("ol", "result-list");
-  for (const token of result.tokens) {
+  for (const token of tokens) {
     const row = selectableRow(token.kind, token.text, token.range, sameRange(selected, token.range), () => onSelect(token.range, -1));
     if (!token.text) row.classList.add("inserted-token");
     list.append(row);
@@ -36,15 +39,16 @@ export function renderTokens(output, result, selected, onSelect) {
 }
 
 export function renderAST(output, result, selectedAST, onSelect) {
+  const ast = result.ast || [];
   output.replaceChildren();
-  output.append(make("p", "stage-summary", `${result.ast.length} concrete AST nodes in parser preorder. Indentation is syntax containment.`));
-  if (!result.ast.length) return output.append(empty("No AST is available", "Fix the parser diagnostics, then analyze again."));
+  output.append(make("p", "stage-summary", `${ast.length} concrete AST nodes in parser preorder. Indentation is syntax containment.`));
+  if (!ast.length) return output.append(empty("No AST is available", "Fix the parser diagnostics, then analyze again."));
 
   const list = make("div", "tree-list");
   const rows = [];
-  for (let index = 0; index < result.ast.length; index += 1) {
-    const node = result.ast[index];
-    const next = result.ast[index + 1];
+  for (let index = 0; index < ast.length; index += 1) {
+    const node = ast[index];
+    const next = ast[index + 1];
     const hasChildren = Boolean(next && next.depth > node.depth);
     const row = make("div", "tree-row");
     row.style.setProperty("--depth", String(node.depth));
@@ -70,11 +74,12 @@ export function renderAST(output, result, selectedAST, onSelect) {
 }
 
 export function renderTypes(output, result, selectedAST, onSelect) {
+  const facts = result.types || [];
   output.replaceChildren();
-  output.append(make("p", "stage-summary", `${result.types.length} semantic facts from types.Info. One occurrence can have more than one fact.`));
-  if (!result.types.length) return output.append(empty("No type facts are available", "Type checking must succeed before semantic facts appear."));
+  output.append(make("p", "stage-summary", `${facts.length} semantic facts from types.Info. One occurrence can have more than one fact.`));
+  if (!facts.length) return output.append(empty("No type facts are available", "Type checking must succeed before semantic facts appear."));
   const list = make("ol", "result-list");
-  for (const fact of result.types) {
+  for (const fact of facts) {
     const li = make("li", "result-row fact-row");
     const button = make("button", "result-select");
     button.type = "button";
@@ -92,13 +97,84 @@ export function renderTypes(output, result, selectedAST, onSelect) {
   output.append(list);
 }
 
-export function renderSSAPlaceholder(output, result) {
+export function renderSSA(output, result, selectedAST, onSelect, preferredName, onFunction) {
   output.replaceChildren();
-  if (!result.functions.length) {
+  const functions = result.functions || [];
+  if (!functions.length) {
     output.append(empty("No SSA is available", "SSA construction begins only after type checking succeeds."));
     return;
   }
-  output.append(empty("SSA is ready", `${result.functions.length} functions were built. The control-flow explorer is the final guided lesson.`));
+
+  const preferred = functions.find((fn) => fn.name === preferredName);
+  const functionItem = preferred || functions.find((fn) => fn.name !== "init") || functions[0];
+  const toolbar = make("div", "ssa-toolbar");
+  const label = make("label", "", "Function");
+  label.htmlFor = "ssa-function";
+  const select = make("select", "function-select");
+  select.id = "ssa-function";
+  for (const fn of functions) {
+    const option = make("option", "", `${fn.name} ${fn.signature}`);
+    option.value = fn.name;
+    option.selected = fn === functionItem;
+    select.append(option);
+  }
+  select.addEventListener("change", () => onFunction(select.value));
+  toolbar.append(label, select);
+  output.append(toolbar);
+
+  const blocks = functionItem.blocks || [];
+  const edges = cfgEdges(blocks);
+  output.append(make("p", "stage-summary", `${blocks.length} basic blocks · ${edges.length} control-flow edges · ${countInstructions(blocks)} instructions`));
+  if (!blocks.length) {
+    output.append(empty("This function has no source body", "Choose a function with basic blocks."));
+    return;
+  }
+
+  const summary = make("p", "sr-only", `Control-flow graph for ${functionItem.name}. ${edges.map((edge) => `Block ${edge.from} flows to block ${edge.to}${edge.label ? ` on ${edge.label}` : ""}.`).join(" ")}`);
+  const flow = make("div", "cfg-flow");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("cfg-edges");
+  svg.setAttribute("aria-hidden", "true");
+  const list = make("div", "cfg-blocks");
+  for (const block of blocks) {
+    const predecessors = block.preds || [];
+    const successors = block.succs || [];
+    const blockInstructions = block.instructions || [];
+    const card = make("section", "cfg-block");
+    card.dataset.block = String(block.index);
+    const header = make("header", "cfg-block-heading");
+    const title = make("h3", "", `BB${block.index}${block.comment ? ` · ${block.comment}` : ""}`);
+    const edgeText = `pred [${predecessors.join(", ") || "—"}] → succ [${successors.join(", ") || "—"}]`;
+    header.append(title, make("span", "", edgeText));
+    card.append(header);
+    const instructions = make("ol", "instruction-list");
+    if (!blockInstructions.length) instructions.append(make("li", "instruction-empty", "No instructions"));
+    for (const instruction of blockInstructions) {
+      const li = make("li", instruction.kind === "Phi" ? "instruction-row is-phi" : "instruction-row");
+      const button = make("button", "instruction-select");
+      button.type = "button";
+      button.setAttribute("aria-selected", selectedAST >= 0 && selectedAST === instruction.astId ? "true" : "false");
+      button.append(make("span", "instruction-kind", instruction.kind));
+      button.append(make("code", "", instruction.text));
+      const meta = instruction.result ? `${instruction.result}${instruction.type ? ` · ${instruction.type}` : ""}` : "effect only";
+      button.append(make("span", "instruction-meta", meta));
+      button.addEventListener("click", () => onSelect(instruction.range, instruction.astId));
+      li.append(button);
+      instructions.append(li);
+    }
+    card.append(instructions);
+    list.append(card);
+  }
+  flow.append(svg, list);
+  output.append(summary, flow);
+  window.requestAnimationFrame(() => drawEdges(flow, svg, edges));
+
+  const raw = make("details", "raw-ssa");
+  raw.append(make("summary", "", "Read raw x/tools SSA"));
+  const pre = make("pre");
+  pre.append(make("code", "", functionItem.raw));
+  raw.append(pre);
+  output.append(raw);
 }
 
 export function renderDiagnostics(container, diagnostics) {
@@ -138,4 +214,44 @@ function compact(text) {
 
 function sameRange(left, right) {
   return Boolean(left && right && left.start === right.start && left.end === right.end);
+}
+
+function countInstructions(blocks) {
+  return blocks.reduce((sum, block) => sum + (block.instructions || []).length, 0);
+}
+
+function drawEdges(flow, svg, edges) {
+  svg.replaceChildren();
+  const flowRect = flow.getBoundingClientRect();
+  const cards = new Map();
+  for (const card of flow.querySelectorAll("[data-block]")) cards.set(Number(card.dataset.block), card);
+  const height = Math.max(flow.scrollHeight, flow.clientHeight);
+  const width = Math.max(flow.clientWidth, 1);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(height));
+  edges.forEach((edge, index) => {
+    const from = cards.get(edge.from);
+    const to = cards.get(edge.to);
+    if (!from || !to) return;
+    const fromRect = from.getBoundingClientRect();
+    const toRect = to.getBoundingClientRect();
+    const startX = fromRect.left - flowRect.left;
+    const startY = fromRect.top - flowRect.top + fromRect.height / 2;
+    const endX = toRect.left - flowRect.left;
+    const endY = toRect.top - flowRect.top + toRect.height / 2;
+    const laneX = Math.max(12, startX - 24 - (index % 3) * 12);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${startX} ${startY} C ${laneX} ${startY}, ${laneX} ${endY}, ${endX} ${endY}`);
+    path.setAttribute("class", edge.to <= edge.from ? "cfg-edge is-back" : "cfg-edge");
+    svg.append(path);
+    if (edge.label) {
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute("x", String(laneX + 2));
+      text.setAttribute("y", String((startY + endY) / 2 - 4));
+      text.setAttribute("class", "cfg-edge-label");
+      text.textContent = edge.label;
+      svg.append(text);
+    }
+  });
 }

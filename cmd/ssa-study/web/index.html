@@ -3,9 +3,88 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>SSA Study Lab</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <main><h1>SSA Study Lab</h1></main>
+  <a class="skip-link" href="#main-content">Skip to the experiment</a>
+  <header class="masthead">
+    <div class="wordmark" aria-label="SSA Study Lab">
+      <span class="wordmark-mark" aria-hidden="true">φ</span>
+      <span><strong>SSA</strong> Study Lab</span>
+    </div>
+    <ol class="pipeline-key" aria-label="Source analysis pipeline">
+      <li data-pipeline="tokens">tokens</li>
+      <li data-pipeline="ast">AST</li>
+      <li data-pipeline="types">types</li>
+      <li data-pipeline="ssa">SSA</li>
+    </ol>
+    <p id="analysis-status" class="analysis-status" role="status">Starting local analyzer…</p>
+  </header>
+
+  <div class="app-layout">
+    <aside class="lesson-rail" aria-label="Guided lessons">
+      <div class="rail-heading">
+        <p class="eyebrow">Trace sequence</p>
+        <p><span id="progress-count">0</span> of 4 predictions complete</p>
+      </div>
+      <nav id="lesson-list" class="lesson-list" aria-label="SSA lessons"></nav>
+      <button id="free-lab" class="rail-action" type="button">Open free lab</button>
+      <p class="rail-note">Your source stays on this machine. The analyzer never executes it.</p>
+    </aside>
+
+    <main id="main-content" class="study-main">
+      <section class="lesson-intro" aria-labelledby="lesson-title">
+        <div>
+          <p id="lesson-kicker" class="eyebrow">Loading lesson</p>
+          <h1 id="lesson-title">Follow one expression through the compiler</h1>
+        </div>
+        <p id="lesson-explanation" class="lesson-explanation"></p>
+      </section>
+
+      <div class="trace-axis" aria-hidden="true">
+        <span>source</span><i></i><span id="trace-stage-label">tokens</span>
+      </div>
+
+      <div class="workbench">
+        <section class="source-pane" aria-labelledby="source-heading">
+          <header class="pane-heading">
+            <div>
+              <p class="eyebrow">Input / study.go</p>
+              <h2 id="source-heading">Editable Go source</h2>
+            </div>
+            <button id="reset-source" class="quiet-button" type="button">Reset lesson</button>
+          </header>
+          <div class="editor-shell">
+            <pre id="source-highlight" class="source-highlight" aria-hidden="true"><code></code></pre>
+            <textarea id="source-editor" class="source-editor" aria-label="Editable Go source" spellcheck="false" autocapitalize="off"></textarea>
+          </div>
+          <p id="source-selection" class="selection-readout">Select an item on the right to trace it to source.</p>
+        </section>
+
+        <section class="stage-pane" aria-labelledby="stage-heading">
+          <header class="pane-heading stage-heading">
+            <div>
+              <p class="eyebrow">Representation</p>
+              <h2 id="stage-heading">What the next phase sees</h2>
+            </div>
+          </header>
+          <div id="stage-tabs" class="stage-tabs" role="tablist" aria-label="Pipeline stage">
+            <button type="button" role="tab" data-stage="tokens" aria-selected="true">Tokens</button>
+            <button type="button" role="tab" data-stage="ast" aria-selected="false">AST</button>
+            <button type="button" role="tab" data-stage="types" aria-selected="false">Types</button>
+            <button type="button" role="tab" data-stage="ssa" aria-selected="false">SSA + CFG</button>
+          </div>
+          <div id="stage-output" class="stage-output" role="tabpanel" aria-live="polite"></div>
+        </section>
+      </div>
+
+      <section id="diagnostics" class="diagnostics" aria-live="polite" hidden></section>
+      <section id="quiz-panel" class="quiz-panel" aria-labelledby="quiz-heading"></section>
+    </main>
+  </div>
+
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

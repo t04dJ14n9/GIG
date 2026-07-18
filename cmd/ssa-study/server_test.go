@@ -20,7 +20,21 @@ func TestHandlerServesIndexLessonsAndAnalysis(t *testing.T) {
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "SSA Study Lab") {
 			t.Fatalf("index response = %d %q", response.Code, response.Body.String())
 		}
+		for _, marker := range []string{`id="source-editor"`, `id="stage-tabs"`, `id="stage-output"`, `src="/app.js"`, `href="/styles.css"`} {
+			if !strings.Contains(response.Body.String(), marker) {
+				t.Fatalf("index missing application marker %q", marker)
+			}
+		}
 		assertSecurityHeaders(t, response)
+	})
+
+	t.Run("assets", func(t *testing.T) {
+		for _, path := range []string{"/styles.css", "/app.js", "/renderers.js"} {
+			response := request(t, handler, http.MethodGet, path, nil)
+			if response.Code != http.StatusOK || response.Body.Len() < 100 {
+				t.Fatalf("asset %s response = %d (%d bytes)", path, response.Code, response.Body.Len())
+			}
+		}
 	})
 
 	t.Run("lessons", func(t *testing.T) {

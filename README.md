@@ -24,6 +24,7 @@ More details:
 - [Chinese architecture walkthrough](docs/ARCHITECTURE_CN.md)
 - [Performance optimization log](docs/PERFORMANCE_OPTIMIZATION_2026-06_CN.md)
 - [Interactive SSA Study Lab](docs/SSA_STUDY_LAB.md)
+- [Pipeline theory: scanning, LL(1) parsing, go/types passes, SSA/CFG construction](docs/PIPELINE_THEORY.md)
 
 ## Features
 

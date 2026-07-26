@@ -115,4 +115,4 @@ Benchmarks in `tests/benchmark_test.go` are paired `BenchmarkGig_X` / `Benchmark
 
 ## Docs
 
-`docs/` holds the design record. `docs/PLAN.md` is the rewrite plan and explains why the bytecode VM was removed. `docs/ARCHITECTURE.md` (+ `_CN`) is the current walkthrough; `docs/SSA_PIPELINE.md` and `docs/AST_SSA_REFERENCE.md` cover the frontend in depth. `docs/superpowers/{plans,specs}/` are dated per-change design docs — check for one matching the area you are changing before redesigning it.
+`docs/` holds the design record. `docs/PLAN.md` is the rewrite plan and explains why the bytecode VM was removed. `docs/ARCHITECTURE.md` (+ `_CN`) is the current walkthrough; `docs/PIPELINE_THEORY.md` explains how each frontend stage works (scanner, LL(1) parsing, go/types passes, SSA/CFG construction), with `docs/SSA_PIPELINE.md` and `docs/AST_SSA_REFERENCE.md` as the API-level references. `docs/superpowers/{plans,specs}/` are dated per-change design docs — check for one matching the area you are changing before redesigning it.

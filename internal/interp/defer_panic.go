@@ -39,11 +39,11 @@ type deferRecord struct {
 	invokeMethod string
 }
 
-func (p *program) runDefer(fr *frame, instr *ssa.Defer) (continuation, []value.Value, error) {
+func (p *program) runDefer(fr *frame, instr *ssa.Defer) error {
 	common := instr.Common()
 	args, err := p.readValuesInto(fr, common.Args, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rec := &deferRecord{args: args}
 	// `defer recv.Method(args)` is modelled by SSA as an Invoke whose
@@ -53,12 +53,12 @@ func (p *program) runDefer(fr *frame, instr *ssa.Defer) (continuation, []value.V
 	if common.IsInvoke() {
 		recv, err := p.readValue(fr, common.Value)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		rec.invokeRecv = recv
 		rec.invokeMethod = common.Method.Name()
 		fr.defers = append(fr.defers, rec)
-		return contNext, nil, nil
+		return nil
 	}
 	switch tgt := common.Value.(type) {
 	case *ssa.Function:
@@ -68,19 +68,19 @@ func (p *program) runDefer(fr *frame, instr *ssa.Defer) (continuation, []value.V
 	default:
 		v, err := p.readValue(fr, common.Value)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		rec.fn = v
 	}
 	fr.defers = append(fr.defers, rec)
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runRunDefers(fr *frame, _ *ssa.RunDefers) (continuation, []value.Value, error) {
+func (p *program) runRunDefers(fr *frame, _ *ssa.RunDefers) error {
 	if err := p.executeDefers(fr); err != nil {
-		return contNext, nil, err
+		return err
 	}
-	return contNext, nil, nil
+	return nil
 }
 
 // executeDefers walks the deferred records in LIFO order and runs each.

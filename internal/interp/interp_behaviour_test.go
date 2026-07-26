@@ -2,7 +2,6 @@ package interp
 
 import (
 	"context"
-	"go/token"
 	"reflect"
 	"testing"
 
@@ -11,52 +10,6 @@ import (
 	"github.com/t04dJ14n9/gig/internal/frontend"
 	"github.com/t04dJ14n9/gig/value"
 )
-
-func TestFusableIndexAddrConsumerRecognizesAdjacentSliceLoadAndStore(t *testing.T) {
-	const src = `
-func TouchSlice() int {
-	s := make([]int, 2)
-	s[0] = 7
-	x := s[0]
-	return x
-}
-`
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	fn := unit.Package().Func("TouchSlice")
-	if fn == nil {
-		t.Fatal("TouchSlice not found")
-	}
-
-	var sawStore, sawLoad bool
-	for _, block := range fn.Blocks {
-		for i := 0; i+1 < len(block.Instrs); i++ {
-			indexAddr, ok := block.Instrs[i].(*ssa.IndexAddr)
-			if !ok {
-				continue
-			}
-			switch next := block.Instrs[i+1].(type) {
-			case *ssa.Store:
-				if next.Addr == indexAddr && fusableIndexAddrConsumer(indexAddr, next) {
-					sawStore = true
-				}
-			case *ssa.UnOp:
-				if next.Op == token.MUL && next.X == indexAddr && fusableIndexAddrConsumer(indexAddr, next) {
-					sawLoad = true
-				}
-			}
-		}
-	}
-	if !sawStore {
-		t.Fatal("did not find a fusable adjacent IndexAddr -> Store pair")
-	}
-	if !sawLoad {
-		t.Fatal("did not find a fusable adjacent IndexAddr -> UnOp(*) pair")
-	}
-}
 
 func TestRunSliceFromMakeSliceArrayProducesNativeIntSlice(t *testing.T) {
 	const src = `
@@ -95,10 +48,10 @@ func MakeSliceArray() int {
 		t.Fatalf("expected SSA Alloc+Slice, got alloc=%v slice=%v", alloc, slice)
 	}
 	fr := prog.newFrame(fn)
-	if _, _, err := prog.runAlloc(fr, alloc); err != nil {
+	if err := prog.runAlloc(fr, alloc); err != nil {
 		t.Fatalf("runAlloc: %v", err)
 	}
-	if _, _, err := prog.runSlice(fr, slice); err != nil {
+	if err := prog.runSlice(fr, slice); err != nil {
 		t.Fatalf("runSlice: %v", err)
 	}
 	got, err := prog.readValue(fr, slice)
@@ -138,7 +91,7 @@ func TestRunIndexAddrMaterializesReflectPointerForGenericPairFallback(t *testing
 
 	fr := prog.newFrame(fn)
 	fr.bindValue(fn.Params[0], reflectValue(reflect.ValueOf([]int{0})))
-	if _, _, err := prog.runIndexAddr(fr, indexAddr); err != nil {
+	if err := prog.runIndexAddr(fr, indexAddr); err != nil {
 		t.Fatalf("runIndexAddr: %v", err)
 	}
 	got, err := prog.readValue(fr, indexAddr)
@@ -151,7 +104,9 @@ func TestRunIndexAddrMaterializesReflectPointerForGenericPairFallback(t *testing
 	}
 }
 
-func TestPlannedIndexPairsFallBackToGenericReflectSlice(t *testing.T) {
+// A slice that did not arrive in the native IntSlice shape must still index,
+// store, and write through to the caller's backing array.
+func TestIndexStoreWritesThroughGenericReflectSlice(t *testing.T) {
 	const src = `func Touch(s []int) int { s[0] = 7; return s[0] }`
 	ctx := context.Background()
 	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
@@ -180,55 +135,38 @@ func TestPlannedIndexPairsFallBackToGenericReflectSlice(t *testing.T) {
 	}
 }
 
-func TestFrameLayoutCombinesSafeIndexAddrPairs(t *testing.T) {
-	const src = `func Touch() int { s := make([]int, 2); s[0] = 7; return s[0] }`
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	layout := (&program{}).frameLayout(unit.Package().Func("Touch"))
-	var loads, stores int
-	for _, block := range layout.blocks {
-		for _, op := range block.ops {
-			switch op.kind {
-			case planIntIndexLoad:
-				loads++
-			case planIntIndexStore:
-				stores++
-			}
-		}
-	}
-	if loads == 0 || stores == 0 {
-		t.Fatalf("planned loads=%d stores=%d", loads, stores)
-	}
-}
-
-func TestFrameLayoutKeepsNamedIntSlicePairsGeneric(t *testing.T) {
+// Indexing a slice of a *named* slice type must behave exactly like indexing
+// []int. Named slice types previously took a fast path that assumed the
+// native int-slice shape and read back the wrong element.
+func TestIndexStoreHandlesNamedIntSliceType(t *testing.T) {
 	const src = `type S []int; func Touch(s S) int { s[0] = 7; return s[0] }`
 	ctx := context.Background()
 	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	layout := (&program{}).frameLayout(unit.Package().Func("Touch"))
-	var loads, stores int
-	for _, block := range layout.blocks {
-		for _, op := range block.ops {
-			switch op.kind {
-			case planIntIndexLoad:
-				loads++
-			case planIntIndexStore:
-				stores++
-			}
-		}
+	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
+	if err != nil {
+		t.Fatalf("NewProgram: %v", err)
 	}
-	if loads != 0 || stores != 0 {
-		t.Fatalf("planned named-slice loads=%d stores=%d, want zero", loads, stores)
+	backing := []int{0}
+	arg, err := value.DefaultConverter().FromReflect(reflect.ValueOf(backing))
+	if err != nil {
+		t.Fatalf("FromReflect: %v", err)
+	}
+	got, err := prog.Call(ctx, "Touch", []value.Value{arg})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	expectInt(t, got, 7)
+	if backing[0] != 7 {
+		t.Fatalf("backing[0] = %d, want 7", backing[0])
 	}
 }
 
-func TestFrameLayoutBuildsOneOrderedIntLoopPlan(t *testing.T) {
+// An int loop exercises Phi merges, int arithmetic, If and Jump in one
+// function. It is the smallest program that covers the whole dispatch loop.
+func TestIntLoopExercisesPhiArithmeticAndBranching(t *testing.T) {
 	const src = `func Sum() int { s := 0; for i := 1; i <= 1000; i++ { s += i }; return s }`
 	ctx := context.Background()
 	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
@@ -236,26 +174,35 @@ func TestFrameLayoutBuildsOneOrderedIntLoopPlan(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	fn := unit.Package().Func("Sum")
-	layout := (&program{}).frameLayout(fn)
-	var sawPhi, sawInt, sawIf, sawJump bool
-	for _, block := range layout.blocks {
-		if len(block.phis) != 0 {
-			sawPhi = true
-		}
-		for _, op := range block.ops {
-			switch op.kind {
-			case planIntBinOp:
-				sawInt = true
-			case planIf:
+
+	var sawPhi, sawBinOp, sawIf, sawJump bool
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			switch instr.(type) {
+			case *ssa.Phi:
+				sawPhi = true
+			case *ssa.BinOp:
+				sawBinOp = true
+			case *ssa.If:
 				sawIf = true
-			case planJump:
+			case *ssa.Jump:
 				sawJump = true
 			}
 		}
 	}
-	if !sawPhi || !sawInt || !sawIf || !sawJump {
-		t.Fatalf("plan shapes phi=%v int=%v if=%v jump=%v", sawPhi, sawInt, sawIf, sawJump)
+	if !sawPhi || !sawBinOp || !sawIf || !sawJump {
+		t.Fatalf("SSA shapes phi=%v binop=%v if=%v jump=%v", sawPhi, sawBinOp, sawIf, sawJump)
 	}
+
+	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
+	if err != nil {
+		t.Fatalf("NewProgram: %v", err)
+	}
+	got, err := prog.Call(ctx, "Sum", nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	expectInt(t, got, 500500)
 }
 
 func TestFrameUsesOneCanonicalValuePerSSAValue(t *testing.T) {

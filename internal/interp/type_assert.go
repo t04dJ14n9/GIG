@@ -14,10 +14,10 @@ import (
 
 // runPanic implements `panic(x)` as an SSA instruction (distinct from
 // the panic builtin used as a function value).
-func (p *program) runPanic(fr *frame, instr *ssa.Panic) (continuation, []value.Value, error) {
+func (p *program) runPanic(fr *frame, instr *ssa.Panic) error {
 	v, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	panic(v.Interface())
 }
@@ -26,21 +26,21 @@ func (p *program) runPanic(fr *frame, instr *ssa.Panic) (continuation, []value.V
 // uses reflect.Type.AssignableTo for the type check; on success it
 // returns the asserted value (or a tuple in the comma-ok form), on
 // failure either panics or returns the zero/false tuple.
-func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation, []value.Value, error) {
+func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	for rv.Kind() == reflect.Interface && !rv.IsNil() {
 		rv = rv.Elem()
 	}
 	dst, err := p.resolver.ResolveType(instr.AssertedType)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 
 	assignable := false
@@ -67,7 +67,7 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 		// Build a synthetic (T, bool) tuple.
 		tt, ok := instr.Type().(*types.Tuple)
 		if !ok {
-			return contNext, nil, fmt.Errorf("interp: TypeAssert CommaOk type not a tuple: %s", instr.Type())
+			return fmt.Errorf("interp: TypeAssert CommaOk type not a tuple: %s", instr.Type())
 		}
 		var holder reflect.Value
 		if interpretedAssignable {
@@ -83,7 +83,7 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 		} else {
 			holderType, err := p.resolver.ResolveType(tt)
 			if err != nil {
-				return contNext, nil, err
+				return err
 			}
 			holder = reflect.New(holderType).Elem()
 		}
@@ -109,7 +109,7 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 		}
 		if interpretedAssignable {
 			fr.setValue(instr, x)
-			return contNext, nil, nil
+			return nil
 		}
 		converted := rv
 		if rv.Type() != dst {
@@ -117,11 +117,11 @@ func (p *program) runTypeAssert(fr *frame, instr *ssa.TypeAssert) (continuation,
 		}
 		out, err := p.converter.FromReflect(converted)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		fr.setValue(instr, out)
 	}
-	return contNext, nil, nil
+	return nil
 }
 
 func (p *program) interpretedValueImplementsInterface(receiver value.Value, typ types.Type) bool {

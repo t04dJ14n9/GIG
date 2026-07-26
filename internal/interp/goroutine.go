@@ -12,15 +12,13 @@ import (
 	"go/types"
 
 	"golang.org/x/tools/go/ssa"
-
-	"github.com/t04dJ14n9/gig/value"
 )
 
-func (p *program) runGo(fr *frame, instr *ssa.Go) (continuation, []value.Value, error) {
+func (p *program) runGo(fr *frame, instr *ssa.Go) error {
 	common := instr.Common()
 	args, err := p.readValuesInto(fr, common.Args, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	switch tgt := common.Value.(type) {
 	case *ssa.Function:
@@ -29,67 +27,67 @@ func (p *program) runGo(fr *frame, instr *ssa.Go) (continuation, []value.Value, 
 			defer func() { _ = recover() }()
 			_, _ = p.callStaticFunction(ctx, nil, tgt, args, 0)
 		}()
-		return contNext, nil, nil
+		return nil
 	case *ssa.Builtin:
 		go func() {
 			defer func() { _ = recover() }()
 			_, _ = p.executeBuiltin(nil, tgt, args)
 		}()
-		return contNext, nil, nil
+		return nil
 	}
 	// Indirect (closure/function value).
 	target, err := p.readValue(fr, common.Value)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(target, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	if rv.Kind() != reflect.Func {
-		return contNext, nil, fmt.Errorf("interp: go target not callable (kind=%s)", rv.Kind())
+		return fmt.Errorf("interp: go target not callable (kind=%s)", rv.Kind())
 	}
 	rargs, err := p.reflectArgs(rv.Type(), args)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	go func() {
 		defer func() { _ = recover() }()
 		rv.Call(rargs)
 	}()
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runSend(fr *frame, instr *ssa.Send) (continuation, []value.Value, error) {
+func (p *program) runSend(fr *frame, instr *ssa.Send) error {
 	chV, err := p.readValue(fr, instr.Chan)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	xV, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(chV, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	for rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
 	rx, err := p.reflectOf(xV, rv.Type().Elem())
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	if err := sendWithContext(fr.ctx, rv, rx); err != nil {
-		return contNext, nil, err
+		return err
 	}
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value.Value, error) {
+func (p *program) runSelect(fr *frame, instr *ssa.Select) error {
 	if fr.ctx != nil {
 		if err := fr.ctx.Err(); err != nil {
-			return contNext, nil, err
+			return err
 		}
 	}
 
@@ -100,11 +98,11 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 	for _, st := range instr.States {
 		ch, err := p.readValue(fr, st.Chan)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		chRV, err := p.reflectOf(ch, nil)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		for chRV.Kind() == reflect.Interface {
 			chRV = chRV.Elem()
@@ -113,11 +111,11 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 		case types.SendOnly:
 			val, err := p.readValue(fr, st.Send)
 			if err != nil {
-				return contNext, nil, err
+				return err
 			}
 			vRV, err := p.reflectOf(val, chRV.Type().Elem())
 			if err != nil {
-				return contNext, nil, err
+				return err
 			}
 			cases = append(cases, reflect.SelectCase{
 				Dir:  reflect.SelectSend,
@@ -141,7 +139,7 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 	}
 	chosen, recv, recvOK := reflect.Select(cases)
 	if chosen == cancelCase {
-		return contNext, nil, fr.ctx.Err()
+		return fr.ctx.Err()
 	}
 	if !instr.Blocking {
 		chosen-- // default has index -1 in SSA terms
@@ -149,11 +147,11 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 
 	tt, ok := instr.Type().(*types.Tuple)
 	if !ok {
-		return contNext, nil, fmt.Errorf("interp: Select type is not tuple")
+		return fmt.Errorf("interp: Select type is not tuple")
 	}
 	rt, err := p.resolver.ResolveType(tt)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	holder := reflect.New(rt).Elem()
 	holder.Field(0).SetInt(int64(chosen))
@@ -177,7 +175,7 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 		recvFieldIdx++
 	}
 	fr.setValue(instr, reflectValue(holder))
-	return contNext, nil, nil
+	return nil
 }
 
 func sendWithContext(ctx context.Context, channel, send reflect.Value) error {

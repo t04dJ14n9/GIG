@@ -14,8 +14,9 @@ import (
 	"github.com/t04dJ14n9/gig/value"
 )
 
-// continuation is the next-action signal returned by every per-instruction
-// runner. It mirrors gofun's _NEXT/_JUMP/_RETURN tri-state.
+// continuation is the next-action signal produced by dispatching one
+// instruction: fall through to the next instruction, restart the loop
+// in a new block, or return from the function.
 type continuation int
 
 const (

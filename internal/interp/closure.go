@@ -86,10 +86,10 @@ func (p *program) makeFuncValue(ctx context.Context, fn *ssa.Function, freeVars 
 // runMakeClosure handles ssa.MakeClosure: build a free-vars list from
 // the binding values in the surrounding frame, then wrap the inner
 // function so subsequent Call instructions see a callable value.
-func (p *program) runMakeClosure(fr *frame, instr *ssa.MakeClosure) (continuation, []value.Value, error) {
+func (p *program) runMakeClosure(fr *frame, instr *ssa.MakeClosure) error {
 	fn, ok := instr.Fn.(*ssa.Function)
 	if !ok {
-		return contNext, nil, fmt.Errorf("interp: MakeClosure target %T not a function", instr.Fn)
+		return fmt.Errorf("interp: MakeClosure target %T not a function", instr.Fn)
 	}
 	freeVars := make([]value.Value, len(instr.Bindings))
 	for i, binding := range instr.Bindings {
@@ -100,14 +100,14 @@ func (p *program) runMakeClosure(fr *frame, instr *ssa.MakeClosure) (continuatio
 		// executes each iteration but must produce a fresh address.
 		captured, err := p.readValue(fr, binding)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		freeVars[i] = captured
 	}
 	v, err := p.makeFuncValue(fr.ctx, fn, freeVars)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	fr.setValue(instr, v)
-	return contNext, nil, nil
+	return nil
 }

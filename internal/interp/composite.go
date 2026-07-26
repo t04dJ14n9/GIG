@@ -94,10 +94,10 @@ func (p *program) makeAddressable(t types.Type) (reflect.Value, error) {
 
 // --- runners ----------------------------------------------------------------
 
-func (p *program) runMakeInterface(fr *frame, instr *ssa.MakeInterface) (continuation, []value.Value, error) {
+func (p *program) runMakeInterface(fr *frame, instr *ssa.MakeInterface) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	// MakeInterface boxes a typed value into an interface. The
 	// resulting interface is non-nil even when the boxed value is a
@@ -107,7 +107,7 @@ func (p *program) runMakeInterface(fr *frame, instr *ssa.MakeInterface) (continu
 	ifaceRT, err := p.resolver.ResolveType(instr.Type())
 	if err != nil || ifaceRT.Kind() != reflect.Interface {
 		fr.setValue(instr, x)
-		return contNext, nil, nil //nolint:nilerr // Missing host interface metadata falls back to the original value.
+		return nil //nolint:nilerr // Missing host interface metadata falls back to the original value.
 	}
 	// Resolve the source's static type and use it as a hint so that
 	// named primitives (e.g. MyInt5 under the hood = int) keep their
@@ -116,7 +116,7 @@ func (p *program) runMakeInterface(fr *frame, instr *ssa.MakeInterface) (continu
 	innerHint, _ := p.resolver.ResolveType(instr.X.Type())
 	innerRV, err := p.reflectOf(x, innerHint)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	if innerHint != nil && innerRV.IsValid() && innerRV.Type() != innerHint && innerRV.Type().ConvertibleTo(innerHint) {
 		innerRV = innerRV.Convert(innerHint)
@@ -138,20 +138,20 @@ func (p *program) runMakeInterface(fr *frame, instr *ssa.MakeInterface) (continu
 			anyHolder.Set(innerRV)
 		}
 		fr.setValue(instr, value.MakeInterfaceBox(anyHolder))
-		return contNext, nil, nil
+		return nil
 	}
 	fr.setValue(instr, value.MakeInterfaceBox(holder))
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runField(fr *frame, instr *ssa.Field) (continuation, []value.Value, error) {
+func (p *program) runField(fr *frame, instr *ssa.Field) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	// Field semantics: SSA's Field operates on a struct value. In
 	// practice the value can arrive boxed in an interface (after
@@ -164,29 +164,29 @@ func (p *program) runField(fr *frame, instr *ssa.Field) (continuation, []value.V
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
-		return contNext, nil, fmt.Errorf("interp: Field on non-struct kind %s", rv.Kind())
+		return fmt.Errorf("interp: Field on non-struct kind %s", rv.Kind())
 	}
 	if instr.Field >= rv.NumField() {
-		return contNext, nil, fmt.Errorf("interp: Field %d out of range for %s (%d fields)",
+		return fmt.Errorf("interp: Field %d out of range for %s (%d fields)",
 			instr.Field, rv.Type(), rv.NumField())
 	}
 	fld := rv.Field(instr.Field)
 	out, err := p.converter.FromReflect(fld)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	fr.setValue(instr, out)
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runFieldAddr(fr *frame, instr *ssa.FieldAddr) (continuation, []value.Value, error) {
+func (p *program) runFieldAddr(fr *frame, instr *ssa.FieldAddr) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	// FieldAddr semantics: x is *T (one level of indirection); the
 	// result is the addressable field of the pointee. Deref exactly
@@ -209,22 +209,22 @@ func (p *program) runFieldAddr(fr *frame, instr *ssa.FieldAddr) (continuation, [
 	}
 	addr := rv.Field(instr.Field).Addr()
 	fr.setValue(instr, reflectValue(addr))
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runIndexAddr(fr *frame, instr *ssa.IndexAddr) (continuation, []value.Value, error) {
+func (p *program) runIndexAddr(fr *frame, instr *ssa.IndexAddr) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	idxV, err := p.readValue(fr, instr.Index)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	idx := int(idxV.Int())
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	// IndexAddr semantics: x is *array or slice. For pointer-to-array,
 	// deref once; slices are already indexable directly. Same
@@ -245,7 +245,7 @@ func (p *program) runIndexAddr(fr *frame, instr *ssa.IndexAddr) (continuation, [
 	}
 	elem := rv.Index(idx)
 	fr.setValue(instr, reflectValue(elem.Addr()))
-	return contNext, nil, nil
+	return nil
 }
 
 func fusableIndexAddrConsumer(indexAddr *ssa.IndexAddr, consumer ssa.Instruction) bool {
@@ -291,43 +291,43 @@ func isPlainIntSliceType(t types.Type) bool {
 	return ok && b.Kind() == types.Int
 }
 
-func (p *program) runIndex(fr *frame, instr *ssa.Index) (continuation, []value.Value, error) {
+func (p *program) runIndex(fr *frame, instr *ssa.Index) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	idxV, err := p.readValue(fr, instr.Index)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	idx := int(idxV.Int())
 	if s, ok := x.IntSlice(); ok {
 		fr.setValue(instr, value.MakeInt(int64(s[idx])))
-		return contNext, nil, nil
+		return nil
 	}
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
 	out, err := p.converter.FromReflect(rv.Index(idx))
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	fr.setValue(instr, out)
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runSlice(fr *frame, instr *ssa.Slice) (continuation, []value.Value, error) {
+func (p *program) runSlice(fr *frame, instr *ssa.Slice) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
@@ -336,21 +336,21 @@ func (p *program) runSlice(fr *frame, instr *ssa.Slice) (continuation, []value.V
 	if instr.Low != nil {
 		v, err := p.readValue(fr, instr.Low)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		low = int(v.Int())
 	}
 	if instr.High != nil {
 		v, err := p.readValue(fr, instr.High)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		high = int(v.Int())
 	}
 	if instr.Max != nil {
 		v, err := p.readValue(fr, instr.Max)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		max = int(v.Int())
 	}
@@ -362,28 +362,28 @@ func (p *program) runSlice(fr *frame, instr *ssa.Slice) (continuation, []value.V
 	}
 	if s, ok := reflectIntSlice(sliced); ok {
 		fr.setValue(instr, value.MakeIntSlice(s))
-		return contNext, nil, nil
+		return nil
 	}
 	out, err := p.converter.FromReflect(sliced)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	fr.setValue(instr, out)
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runLookup(fr *frame, instr *ssa.Lookup) (continuation, []value.Value, error) {
+func (p *program) runLookup(fr *frame, instr *ssa.Lookup) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	keyV, err := p.readValue(fr, instr.Index)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
@@ -392,15 +392,15 @@ func (p *program) runLookup(fr *frame, instr *ssa.Lookup) (continuation, []value
 		// Lookup on string returns the byte at index.
 		idx := int(keyV.Int())
 		fr.setValue(instr, value.MakeUint8(rv.String()[idx]))
-		return contNext, nil, nil
+		return nil
 	}
 	if rv.Kind() != reflect.Map {
-		return contNext, nil, fmt.Errorf("interp: Lookup on non-map kind %s", rv.Kind())
+		return fmt.Errorf("interp: Lookup on non-map kind %s", rv.Kind())
 	}
 	keyRT := rv.Type().Key()
 	keyRV, err := p.reflectOf(keyV, keyRT)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	got := rv.MapIndex(keyRV)
 	ok := got.IsValid()
@@ -409,14 +409,14 @@ func (p *program) runLookup(fr *frame, instr *ssa.Lookup) (continuation, []value
 	}
 	gotV, err := p.converter.FromReflect(got)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	if instr.CommaOk {
 		// Tuple result: pack as a synthetic struct so Extract reads it.
 		tt := instr.Type().(*types.Tuple)
 		rt, err := p.resolver.ResolveType(tt)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		holder := reflect.New(rt).Elem()
 		holder.Field(0).Set(got)
@@ -425,105 +425,105 @@ func (p *program) runLookup(fr *frame, instr *ssa.Lookup) (continuation, []value
 	} else {
 		fr.setValue(instr, gotV)
 	}
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runMapUpdate(fr *frame, instr *ssa.MapUpdate) (continuation, []value.Value, error) {
+func (p *program) runMapUpdate(fr *frame, instr *ssa.MapUpdate) error {
 	mV, err := p.readValue(fr, instr.Map)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	kV, err := p.readValue(fr, instr.Key)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	vV, err := p.readValue(fr, instr.Value)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(mV, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
 	keyRV, err := p.reflectOf(kV, rv.Type().Key())
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	valRV, err := p.reflectOf(vV, rv.Type().Elem())
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv.SetMapIndex(keyRV, valRV)
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runMakeSlice(fr *frame, instr *ssa.MakeSlice) (continuation, []value.Value, error) {
+func (p *program) runMakeSlice(fr *frame, instr *ssa.MakeSlice) error {
 	lenV, err := p.readValue(fr, instr.Len)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	capV, err := p.readValue(fr, instr.Cap)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	if isPlainIntSliceType(instr.Type()) {
 		fr.setValue(instr, value.MakeIntSlice(make([]int, int(lenV.Int()), int(capV.Int()))))
-		return contNext, nil, nil
+		return nil
 	}
 	rt, err := p.resolver.ResolveType(instr.Type())
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	out := reflect.MakeSlice(rt, int(lenV.Int()), int(capV.Int()))
 	v, err := p.converter.FromReflect(out)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	fr.setValue(instr, v)
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runMakeMap(fr *frame, instr *ssa.MakeMap) (continuation, []value.Value, error) {
+func (p *program) runMakeMap(fr *frame, instr *ssa.MakeMap) error {
 	rt, err := p.resolver.ResolveType(instr.Type())
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	size := 0
 	if instr.Reserve != nil {
 		v, err := p.readValue(fr, instr.Reserve)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		size = int(v.Int())
 	}
 	out := reflect.MakeMapWithSize(rt, size)
 	v, err := p.converter.FromReflect(out)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	fr.setValue(instr, v)
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runMakeChan(fr *frame, instr *ssa.MakeChan) (continuation, []value.Value, error) {
+func (p *program) runMakeChan(fr *frame, instr *ssa.MakeChan) error {
 	rt, err := p.resolver.ResolveType(instr.Type())
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	sizeV, err := p.readValue(fr, instr.Size)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	out := reflect.MakeChan(rt, int(sizeV.Int()))
 	v, err := p.converter.FromReflect(out)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	fr.setValue(instr, v)
-	return contNext, nil, nil
+	return nil
 }
 
 // rangeIter is the iterator state captured by ssa.Range.
@@ -538,14 +538,14 @@ type rangeIter struct {
 	strPos int
 }
 
-func (p *program) runRange(fr *frame, instr *ssa.Range) (continuation, []value.Value, error) {
+func (p *program) runRange(fr *frame, instr *ssa.Range) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(x, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
@@ -558,7 +558,7 @@ func (p *program) runRange(fr *frame, instr *ssa.Range) (continuation, []value.V
 	case reflect.String:
 		it.str = rv.String()
 	default:
-		return contNext, nil, fmt.Errorf("interp: Range over %s not supported", rv.Kind())
+		return fmt.Errorf("interp: Range over %s not supported", rv.Kind())
 	}
 	fr.setValue(instr, value.MakeNil()) // sentinel; the iterator goes through fr.iters
 	// Stash the iterator in a side-channel keyed by ssa.Value so Next
@@ -567,21 +567,21 @@ func (p *program) runRange(fr *frame, instr *ssa.Range) (continuation, []value.V
 		fr.iters = make(map[ssa.Value]*rangeIter)
 	}
 	fr.iters[instr] = it
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runNext(fr *frame, instr *ssa.Next) (continuation, []value.Value, error) {
+func (p *program) runNext(fr *frame, instr *ssa.Next) error {
 	it, ok := fr.iters[instr.Iter]
 	if !ok {
-		return contNext, nil, fmt.Errorf("interp: Next without prior Range")
+		return fmt.Errorf("interp: Next without prior Range")
 	}
 	tt, ok := instr.Type().(*types.Tuple)
 	if !ok {
-		return contNext, nil, fmt.Errorf("interp: Next type is not tuple: %s", instr.Type())
+		return fmt.Errorf("interp: Next type is not tuple: %s", instr.Type())
 	}
 	rt, err := p.resolver.ResolveType(tt)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	holder := reflect.New(rt).Elem()
 	setField := func(idx int, value any) {
@@ -619,28 +619,28 @@ func (p *program) runNext(fr *frame, instr *ssa.Next) (continuation, []value.Val
 		}
 	}
 	fr.setValue(instr, reflectValue(holder))
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runExtract(fr *frame, instr *ssa.Extract) (continuation, []value.Value, error) {
+func (p *program) runExtract(fr *frame, instr *ssa.Extract) error {
 	tup, err := p.readValue(fr, instr.Tuple)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	rv, err := p.reflectOf(tup, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
-		return contNext, nil, fmt.Errorf("interp: Extract on non-tuple kind %s", rv.Kind())
+		return fmt.Errorf("interp: Extract on non-tuple kind %s", rv.Kind())
 	}
 	out, err := p.converter.FromReflect(rv.Field(instr.Index))
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	fr.setValue(instr, out)
-	return contNext, nil, nil
+	return nil
 }

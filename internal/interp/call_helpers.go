@@ -12,7 +12,7 @@ import (
 
 func (p *program) callStaticFunction(ctx context.Context, caller *frame, fn *ssa.Function, args []value.Value, depth int) ([]value.Value, error) {
 	if len(fn.Blocks) == 0 {
-		return p.callHostFunc(ctx, fn, args)
+		return p.callHostFunc(ctx, caller, fn, args, depth)
 	}
 	return p.callSSA(ctx, caller, fn, args, nil, depth)
 }

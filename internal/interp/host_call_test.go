@@ -212,7 +212,7 @@ func TestCallHostFuncMethodCompatibilityFallbackPreservesInvocationErrors(t *tes
 			resolver:  newTypeResolver(env, ssaPkg.Pkg.Path()),
 		}
 
-		_, err := prog.callHostFunc(context.Background(), fn, []value.Value{receiver})
+		_, err := prog.callHostFunc(context.Background(), nil, fn, []value.Value{receiver}, 0)
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("callHostFunc error = %v, want original error %v", err, wantErr)
 		}
@@ -238,7 +238,7 @@ func TestCallHostFuncMethodCompatibilityFallbackPreservesInvocationErrors(t *tes
 			resolver:  newTypeResolver(env, ssaPkg.Pkg.Path()),
 		}
 
-		_, err := prog.callHostFunc(context.Background(), fn, []value.Value{receiver})
+		_, err := prog.callHostFunc(context.Background(), nil, fn, []value.Value{receiver}, 0)
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("callHostFunc error = %v, want resolved method error %v", err, wantErr)
 		}
@@ -256,7 +256,7 @@ func TestCallHostFuncMethodCompatibilityFallbackPreservesInvocationErrors(t *tes
 			resolver:  newTypeResolver(env, ssaPkg.Pkg.Path()),
 		}
 
-		_, err := prog.callHostFunc(context.Background(), fn, []value.Value{receiver})
+		_, err := prog.callHostFunc(context.Background(), nil, fn, []value.Value{receiver}, 0)
 		const want = "interp: host function example/fallback.Explode not found"
 		if err == nil || err.Error() != want {
 			t.Fatalf("callHostFunc error = %v, want %q", err, want)

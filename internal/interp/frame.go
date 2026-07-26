@@ -192,7 +192,7 @@ func (p *program) callSSAInto(
 			// deferred closure's recover() can locate the panicking
 			// frame via the threaded caller (see callBuiltin "recover").
 			for i := len(fr.defers) - 1; i >= 0; i-- {
-				_ = p.runDeferRec(fr, fr.defers[i])
+				_ = p.runDeferRec(fr, fr.defers[i], depth)
 			}
 			fr.defers = nil
 			if fr.panicking {
@@ -206,7 +206,7 @@ func (p *program) callSSAInto(
 			if fr.fn.Recover != nil {
 				fr.block = fr.fn.Recover
 				fr.prevBlock = nil
-				rs, rerr := p.runFrame(caller, fr, depth, singleResult)
+				rs, rerr := p.runFrame(fr, depth, singleResult)
 				if rerr != nil {
 					err = rerr
 					results = nil
@@ -221,7 +221,7 @@ func (p *program) callSSAInto(
 		}
 	}()
 
-	results, err = p.runFrame(caller, fr, depth, singleResult)
+	results, err = p.runFrame(fr, depth, singleResult)
 	return results, err
 }
 
@@ -297,7 +297,7 @@ func (p *program) zeroResultsFor(fn *ssa.Function, singleResult *value.Value) ([
 // hit or an error escapes. Control-flow instructions update fr.block and
 // fr.prevBlock; value-producing instructions update canonical value storage.
 func (p *program) runFrame(
-	caller *frame, fr *frame, depth int, singleResult *value.Value,
+	fr *frame, depth int, singleResult *value.Value,
 ) ([]value.Value, error) {
 	if err := fr.checkContextNow(); err != nil {
 		return nil, err
@@ -317,7 +317,7 @@ blocks:
 			if err := fr.checkContext(); err != nil {
 				return nil, err
 			}
-			contState, ret, err := p.runPlannedOp(caller, fr, &plan.ops[i], depth, singleResult)
+			contState, ret, err := p.runPlannedOp(fr, &plan.ops[i], depth, singleResult)
 			if err != nil {
 				return nil, err
 			}

@@ -76,8 +76,8 @@ func (p *program) runDefer(fr *frame, instr *ssa.Defer) error {
 	return nil
 }
 
-func (p *program) runRunDefers(fr *frame, _ *ssa.RunDefers) error {
-	if err := p.executeDefers(fr); err != nil {
+func (p *program) runRunDefers(fr *frame, _ *ssa.RunDefers, depth int) error {
+	if err := p.executeDefers(fr, depth); err != nil {
 		return err
 	}
 	return nil
@@ -85,11 +85,13 @@ func (p *program) runRunDefers(fr *frame, _ *ssa.RunDefers) error {
 
 // executeDefers walks the deferred records in LIFO order and runs each.
 // A panic inside a defer body is captured in fr.panicVal; subsequent
-// recover() in this frame will retrieve it.
-func (p *program) executeDefers(fr *frame) error {
+// recover() in this frame will retrieve it. depth is fr's own call
+// depth; each fired defer body runs one level deeper so deferred
+// recursion still trips the max-depth guard.
+func (p *program) executeDefers(fr *frame, depth int) error {
 	for i := len(fr.defers) - 1; i >= 0; i-- {
 		rec := fr.defers[i]
-		if err := p.runDeferRec(fr, rec); err != nil {
+		if err := p.runDeferRec(fr, rec, depth); err != nil {
 			return err
 		}
 	}
@@ -97,7 +99,7 @@ func (p *program) executeDefers(fr *frame) error {
 	return nil
 }
 
-func (p *program) runDeferRec(fr *frame, rec *deferRecord) error {
+func (p *program) runDeferRec(fr *frame, rec *deferRecord, depth int) error {
 	defer func() {
 		if re := recover(); re != nil {
 			fr.panicking = true
@@ -106,10 +108,10 @@ func (p *program) runDeferRec(fr *frame, rec *deferRecord) error {
 	}()
 	switch {
 	case rec.invokeMethod != "":
-		_, err := p.invokeMethodOn(fr.ctx, fr, rec.invokeRecv, rec.invokeMethod, rec.args)
+		_, err := p.invokeMethodOn(fr.ctx, fr, rec.invokeRecv, rec.invokeMethod, rec.args, depth+1)
 		return err
 	case rec.fnSSA != nil:
-		_, err := p.callStaticFunction(fr.ctx, fr, rec.fnSSA, rec.args, 0)
+		_, err := p.callStaticFunction(fr.ctx, fr, rec.fnSSA, rec.args, depth+1)
 		return err
 	case rec.builtin != nil:
 		// Builtins as defer targets are rare (close, print).
@@ -123,7 +125,7 @@ func (p *program) runDeferRec(fr *frame, rec *deferRecord) error {
 	// link. Genuinely-external func values still take the reflect path.
 	if fn, ok := rec.fn.Func(); ok {
 		if ifn, ok := fn.(*interpretedFunc); ok && len(ifn.fn.Blocks) > 0 {
-			_, err := p.callSSA(fr.ctx, fr, ifn.fn, rec.args, ifn.freeVars, 0)
+			_, err := p.callSSA(fr.ctx, fr, ifn.fn, rec.args, ifn.freeVars, depth+1)
 			return err
 		}
 	}

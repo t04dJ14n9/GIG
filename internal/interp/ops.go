@@ -22,7 +22,7 @@ import (
 // continues with the next instruction. Only the control-flow handlers
 // return the full triple: runIf and runJump yield contJump, and
 // runReturn yields contReturn with the function's result values.
-func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, depth int, singleResult *value.Value) (continuation, []value.Value, error) {
+func (p *program) visitInstr(fr *frame, instr ssa.Instruction, depth int, singleResult *value.Value) (continuation, []value.Value, error) {
 	switch x := instr.(type) {
 	case *ssa.DebugRef:
 		return contNext, nil, nil
@@ -55,7 +55,7 @@ func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, de
 		return contNext, nil, p.runMakeInterface(fr, x)
 
 	case *ssa.Call:
-		return contNext, nil, p.runCall(caller, fr, x, depth)
+		return contNext, nil, p.runCall(fr, x, depth)
 
 	case *ssa.Alloc:
 		return contNext, nil, p.runAlloc(fr, x)
@@ -109,7 +109,7 @@ func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, de
 		return contNext, nil, p.runDefer(fr, x)
 
 	case *ssa.RunDefers:
-		return contNext, nil, p.runRunDefers(fr, x)
+		return contNext, nil, p.runRunDefers(fr, x, depth)
 
 	case *ssa.Panic:
 		return contNext, nil, p.runPanic(fr, x)
@@ -450,10 +450,10 @@ func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) erro
 	return nil
 }
 
-func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) error {
+func (p *program) runCall(fr *frame, instr *ssa.Call, depth int) error {
 	common := instr.Common()
 	if common.IsInvoke() {
-		return p.runInvokeCall(caller, fr, instr, common, depth)
+		return p.runInvokeCall(fr, instr, common, depth)
 	}
 	if builtin, ok := common.Value.(*ssa.Builtin); ok {
 		out, err := p.callBuiltin(fr, builtin, common.Args)
@@ -465,7 +465,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 	}
 	if fn, ok := common.Value.(*ssa.Function); ok {
 		if len(fn.Blocks) == 0 {
-			return p.runHostFunctionCall(fr, instr, fn, common.Args)
+			return p.runHostFunctionCall(fr, instr, fn, common.Args, depth)
 		}
 		return p.runDirectInterpretedCall(fr, instr, fn, common.Args, depth)
 	}
@@ -510,8 +510,10 @@ func (p *program) finishCall(fr *frame, instr *ssa.Call, results []value.Value) 
 
 // runInvokeCall executes an interface method invocation: x.M(...) where x: I.
 // SSA models this with Common.IsInvoke()==true; Common.Method names the method,
-// and Common.Value is the interface receiver.
-func (p *program) runInvokeCall(_ *frame, fr *frame, instr *ssa.Call, common *ssa.CallCommon, _ int) error {
+// and Common.Value is the interface receiver. fr is both the frame reading
+// the operands and the caller of the invoked method; depth+1 keeps the
+// recursion guard honest when the method body is interpreted.
+func (p *program) runInvokeCall(fr *frame, instr *ssa.Call, common *ssa.CallCommon, depth int) error {
 	recvV, err := p.readValue(fr, common.Value)
 	if err != nil {
 		return err
@@ -520,7 +522,7 @@ func (p *program) runInvokeCall(_ *frame, fr *frame, instr *ssa.Call, common *ss
 	if err != nil {
 		return err
 	}
-	results, err := p.invokeMethodOn(fr.ctx, fr, recvV, common.Method.Name(), args)
+	results, err := p.invokeMethodOn(fr.ctx, fr, recvV, common.Method.Name(), args, depth+1)
 	if err != nil {
 		return err
 	}
@@ -529,12 +531,12 @@ func (p *program) runInvokeCall(_ *frame, fr *frame, instr *ssa.Call, common *ss
 
 // runHostFunctionCall dispatches a body-less SSA function through the host
 // environment.
-func (p *program) runHostFunctionCall(fr *frame, instr *ssa.Call, fn *ssa.Function, refs []ssa.Value) error {
+func (p *program) runHostFunctionCall(fr *frame, instr *ssa.Call, fn *ssa.Function, refs []ssa.Value, depth int) error {
 	args, err := p.readValuesInto(fr, refs, nil)
 	if err != nil {
 		return err
 	}
-	results, err := p.callHostFunc(fr.ctx, fn, args)
+	results, err := p.callHostFunc(fr.ctx, fr, fn, args, depth+1)
 	if err != nil {
 		return err
 	}

@@ -61,7 +61,11 @@ func callResolvedHostMethod(method host.Method, recv value.Value, args []value.V
 // node; the host bridge resolves them to a host.Function. Generated
 // wrappers may run through host.DirectFunction; all other functions
 // fall back to reflect-backed host.Function.Call.
-func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []value.Value) ([]value.Value, error) {
+//
+// caller and depth matter only when dispatch falls back to an
+// interpreted method body: caller links recover() to the right frame,
+// depth is the call depth that body will run at.
+func (p *program) callHostFunc(ctx context.Context, caller *frame, fn *ssa.Function, args []value.Value, depth int) ([]value.Value, error) {
 	if p.env == nil {
 		return nil, fmt.Errorf("interp: %s: no host.Environment registered", fn.Name())
 	}
@@ -74,7 +78,7 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 	// Method on a host type — dispatch through reflect.MethodByName on
 	// the receiver. SSA emits these with the receiver as args[0].
 	if fn.Signature.Recv() != nil && len(args) > 0 {
-		return p.invokeMethodOn(ctx, nil, args[0], fn.Name(), args[1:])
+		return p.invokeMethodOn(ctx, caller, args[0], fn.Name(), args[1:], depth)
 	}
 	// Free function.
 	hf, ok := p.lookupHostFunc(fn, pkgPath)
@@ -83,7 +87,7 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 		// like bytes/list whose methods register through the legacy
 		// MethodDirectCall path that LookupFunc doesn't see.
 		if len(args) > 0 {
-			dispatch, err := p.tryInvokeMethodOn(ctx, nil, args[0], fn.Name(), args[1:])
+			dispatch, err := p.tryInvokeMethodOn(ctx, caller, args[0], fn.Name(), args[1:], depth)
 			if err != nil {
 				return nil, err
 			}
@@ -114,8 +118,8 @@ func (p *program) lookupHostFunc(fn *ssa.Function, pkgPath string) (host.Functio
 // invokeMethodOn calls receiver.method(args), trying first the
 // interpreted SSA package (for methods on user-defined types) and then
 // reflect.MethodByName on the host receiver.
-func (p *program) invokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value) ([]value.Value, error) {
-	dispatch, err := p.tryInvokeMethodOn(ctx, caller, receiver, method, args)
+func (p *program) invokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value, depth int) ([]value.Value, error) {
+	dispatch, err := p.tryInvokeMethodOn(ctx, caller, receiver, method, args, depth)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +129,7 @@ func (p *program) invokeMethodOn(ctx context.Context, caller *frame, receiver va
 	return dispatch.results, nil
 }
 
-func (p *program) tryInvokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value) (methodDispatchResult, error) {
+func (p *program) tryInvokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value, depth int) (methodDispatchResult, error) {
 	// Methods declared on interpreted types live as SSA functions on
 	// the package, named like "(*AdderStruct).Add" or "AdderStruct.Add".
 	// When the receiver arrived through a MakeInterface box we unwrap
@@ -151,7 +155,7 @@ func (p *program) tryInvokeMethodOn(ctx context.Context, caller *frame, receiver
 		recv := p.adjustReceiverShape(dynRecv, fn)
 		all := append([]value.Value{recv}, args...)
 		dispatch.found = true
-		dispatch.results, err = p.callSSA(ctx, caller, fn, all, nil, 0)
+		dispatch.results, err = p.callSSA(ctx, caller, fn, all, nil, depth)
 		return dispatch, err
 	}
 	m := rv.MethodByName(method)

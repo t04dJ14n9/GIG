@@ -35,7 +35,7 @@ func (f *interpretedFunc) Call(args []value.Value, depth int) ([]value.Value, er
 
 func (f *interpretedFunc) CallContext(ctx context.Context, args []value.Value, depth int) ([]value.Value, error) {
 	if len(f.fn.Blocks) == 0 {
-		return f.p.callHostFunc(ctx, f.fn, args)
+		return f.p.callHostFunc(ctx, nil, f.fn, args, depth)
 	}
 	return f.p.callSSA(ctx, nil, f.fn, args, f.freeVars, depth)
 }

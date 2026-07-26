@@ -1,7 +1,7 @@
 // Package frontend turns Go source into SSA. It owns parse, type-check,
 // validation (banned imports, panic policy), auto-package insertion,
-// and SSA construction. It produces no bytecode; that part of the
-// legacy compiler is removed in Phase 4 of docs/PLAN.md.
+// and SSA construction. Its output, a Unit, is handed straight to
+// internal/interp; there is no bytecode stage (see docs/PLAN.md).
 package frontend
 
 import (
@@ -43,7 +43,7 @@ type Config struct {
 }
 
 // Builder is the only entry point this package exposes. The default
-// implementation lives in builder.go (Phase 4).
+// implementation lives in builder.go.
 type Builder interface {
 	Build(ctx context.Context, src Source, env host.Environment, cfg Config) (Unit, error)
 }

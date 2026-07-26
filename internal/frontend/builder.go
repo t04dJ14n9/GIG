@@ -226,9 +226,10 @@ func checkBannedPanic(fset *token.FileSet, file *ast.File) error {
 }
 
 // injectAutoImports adds import statements for unresolved identifiers
-// that env.AutoImport claims belong to a known package. It mirrors
-// gofun's autoImport plus the legacy gig behaviour: the host gets to
-// say "ident X means package P" and we splice the import in.
+// that env.AutoImport claims belong to a known package: the host gets
+// to say "ident X means package P" and we splice the import in, so
+// single-snippet sources can use fmt/strings/... without writing an
+// import block.
 func injectAutoImports(file *ast.File, env host.Environment) {
 	already := make(map[string]bool)
 	for _, imp := range file.Imports {

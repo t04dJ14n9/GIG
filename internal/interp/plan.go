@@ -1,3 +1,22 @@
+// plan.go precompiles each basic block into an execution plan once per
+// function, cached in the frame layout. Most instructions become
+// planGeneric ops that defer to visitInstr; a handful of int-typed
+// shapes (arithmetic/comparison BinOps, If, Jump, and fused
+// IndexAddr+load/store pairs on []int) get typed ops that read operands
+// by frame index — or as inlined constants — without map lookups,
+// type switches, or Value boxing.
+//
+// This is deliberately a second way to execute the same SSA, and it is
+// load-bearing: a 2026-07 experiment deleting it in favour of walking
+// block.Instrs through visitInstr alone cost 5.9x–14.8x on int-loop
+// benchmarks (BubbleSort 15x, Sieve 9x, ArithmeticSum 6x) and pushed
+// BubbleSort from 11 to ~7400 allocs/op, far beyond the 3x ceiling in
+// docs/superpowers/specs/2026-07-26-interp-readability-pass-design.md.
+// Keep the planned/generic split in mind when changing either path:
+// planned ops must stay semantically identical to the generic handlers
+// they shortcut, and anything a planned op cannot prove falls back to
+// planGeneric (or, for index fusion, re-enters the generic pair at run
+// time when the slice is not in native []int shape).
 package interp
 
 import (

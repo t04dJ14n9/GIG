@@ -1,7 +1,6 @@
-// frame.go is the per-call execution record and dispatcher loop. It
-// mirrors gofun's frame model: walk the SSA basic blocks one
-// instruction at a time, branching on the SSA node type, with Phi
-// nodes resolved at block entry.
+// frame.go is the per-call execution record and dispatcher loop: walk
+// the SSA basic blocks one instruction at a time, branching on the SSA
+// node type, with Phi nodes resolved at block entry.
 package interp
 
 import (

@@ -1,10 +1,7 @@
 // engine.go is the default interp.Engine implementation. It builds
-// Programs from frontend Units and exposes the per-call entry point.
-//
-// Phase 6 vertical slice: this engine runs interpreted Go code limited
-// to scalar arithmetic, control flow, function calls, local Alloc/Store,
-// and Phi merges. Composite types, closures, defer/panic/recover,
-// goroutines, and host calls are added in subsequent slices.
+// Programs from frontend Units — allocating globals and running init()
+// once at construction — and exposes Call, the per-invocation entry
+// point that resolves a function by name and runs it.
 package interp
 
 import (
@@ -57,9 +54,8 @@ func (defaultEngine) NewProgram(ctx context.Context, unit frontend.Unit, env hos
 		return nil, err
 	}
 	// init() runs once at construction so the Go semantics of
-	// package-level initialisation are honoured. The vertical slice
-	// has no globals-with-bodies, so this is currently a no-op for the
-	// programs we test, but the call site is kept honest.
+	// package-level initialisation are honoured: global initialisers
+	// and init() bodies execute before the first Call.
 	if err := p.runInit(ctx); err != nil {
 		return nil, err
 	}
@@ -69,9 +65,9 @@ func (defaultEngine) NewProgram(ctx context.Context, unit frontend.Unit, env hos
 const defaultMaxDepth = 1024
 
 // program is the running Program. Mutable package globals live directly in
-// globals, allocated once at construction time (matching gofun and Go
-// semantics). Addressability for locals and composite data lives inside
-// reflected pointer values rather than in a second storage wrapper.
+// globals, allocated once at construction time as in compiled Go.
+// Addressability for locals and composite data lives inside reflected
+// pointer values rather than in a second storage wrapper.
 type program struct {
 	ssaPkg      *ssa.Package
 	env         host.Environment
@@ -138,9 +134,8 @@ func (p *program) allocateGlobals() error {
 }
 
 // runInit invokes the package's init() function once at construction.
-// Phase 6 vertical slice has nothing meaningful to put through init,
-// but a missing function is also fine: SSA only emits init when there
-// is something to do.
+// A missing function is fine: SSA only emits init when there is
+// something to do.
 func (p *program) runInit(ctx context.Context) error {
 	fn := p.ssaPkg.Func("init")
 	if fn == nil {

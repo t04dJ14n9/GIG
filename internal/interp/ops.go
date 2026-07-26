@@ -1,8 +1,9 @@
 // ops.go is the instruction dispatcher. It pattern-matches on
 // ssa.Instruction concrete types and routes each one to a small
-// handler. Phase 6 vertical slice covers scalar arithmetic, control
-// flow, function calls, and Alloc/Store. Composite types, closures,
-// host calls, defer/panic/recover, and concurrency follow in 6.2+.
+// handler: scalar arithmetic, control flow, calls, and memory ops live
+// here; composite-type ops in composite.go, closures in closure.go,
+// host dispatch in host_call.go, defer/panic/recover in defer_panic.go,
+// and concurrency in goroutine.go.
 package interp
 
 import (
@@ -138,7 +139,7 @@ func (p *program) visitInstr(fr *frame, instr ssa.Instruction, depth int, single
 
 // readValue resolves any ssa.Value reference to a runtime Value. It
 // covers: parameters, locals, prior instruction results, *ssa.Const,
-// *ssa.Global (read), and *ssa.Function (Phase 6.2+).
+// *ssa.Global (read), and bare *ssa.Function references.
 func (p *program) readValue(fr *frame, v ssa.Value) (value.Value, error) {
 	if v == nil {
 		return value.MakeNil(), nil
@@ -797,8 +798,8 @@ func coerceReflectValue(src reflect.Value, dstType reflect.Type) (reflect.Value,
 	return reflect.Value{}, false, nil
 }
 
-// derefSSAType returns the pointee type of a *T SSA type. It is the SSA
-// equivalent of gofun's deref helper.
+// derefSSAType returns the pointee type of a *T SSA type, or the type
+// itself when it is not a pointer.
 func derefSSAType(t types.Type) types.Type {
 	if pt, ok := t.Underlying().(*types.Pointer); ok {
 		return pt.Elem()

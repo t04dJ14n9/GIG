@@ -83,14 +83,14 @@ export function renderTypes(output, result, selectedAST, onSelect) {
     const li = make("li", "result-row fact-row");
     const button = make("button", "result-select");
     button.type = "button";
-    button.setAttribute("aria-selected", selectedAST === fact.astId ? "true" : "false");
+    button.setAttribute("aria-selected", selectedAST === fact.ast_id ? "true" : "false");
     button.append(make("span", "result-kind", fact.kind));
     button.append(make("span", "result-text", compact(fact.name)));
     const detail = make("span", "fact-detail");
     detail.append(make("strong", "", fact.value ? `${fact.type} = ${fact.value}` : fact.type || "—"));
     if (fact.object) detail.append(make("small", "", fact.object));
     button.append(detail);
-    button.addEventListener("click", () => onSelect(fact.range, fact.astId));
+    button.addEventListener("click", () => onSelect(fact.range, fact.ast_id));
     li.append(button);
     list.append(li);
   }
@@ -153,12 +153,12 @@ export function renderSSA(output, result, selectedAST, onSelect, preferredName, 
       const li = make("li", instruction.kind === "Phi" ? "instruction-row is-phi" : "instruction-row");
       const button = make("button", "instruction-select");
       button.type = "button";
-      button.setAttribute("aria-selected", selectedAST >= 0 && selectedAST === instruction.astId ? "true" : "false");
+      button.setAttribute("aria-selected", selectedAST >= 0 && selectedAST === instruction.ast_id ? "true" : "false");
       button.append(make("span", "instruction-kind", instruction.kind));
       button.append(make("code", "", instruction.text));
       const meta = instruction.result ? `${instruction.result}${instruction.type ? ` · ${instruction.type}` : ""}` : "effect only";
       button.append(make("span", "instruction-meta", meta));
-      button.addEventListener("click", () => onSelect(instruction.range, instruction.astId));
+      button.addEventListener("click", () => onSelect(instruction.range, instruction.ast_id));
       li.append(button);
       instructions.append(li);
     }

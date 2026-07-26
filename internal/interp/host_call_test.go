@@ -28,6 +28,7 @@ func (f *recordingHostFunction) Call([]value.Value) ([]value.Value, error) {
 
 type recordingDirectFunction struct {
 	*recordingHostFunction
+
 	directCalls  int
 	handled      bool
 	directResult value.Value
@@ -57,6 +58,7 @@ func (m *recordingHostMethod) Call(value.Value, []value.Value) ([]value.Value, e
 
 type recordingDirectMethod struct {
 	*recordingHostMethod
+
 	directCalls  int
 	handled      bool
 	directResult value.Value
@@ -67,6 +69,7 @@ type hostFallbackReceiver struct{}
 
 type methodFallbackEnv struct {
 	stubEnv
+
 	methodName string
 	method     host.Method
 }

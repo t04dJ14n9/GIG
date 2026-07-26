@@ -45,6 +45,7 @@ func ArithmeticSum() int {
 }
 `
 	allocs := measureProgramAllocs(t, src, "ArithmeticSum", 20, func(t *testing.T, got []value.Value) {
+		t.Helper()
 		expectInt(t, got, 500500)
 	})
 	if allocs > 100 {
@@ -73,6 +74,7 @@ func BubbleSort() int {
 }
 `
 	allocs := measureProgramAllocs(t, src, "BubbleSort", 10, func(t *testing.T, got []value.Value) {
+		t.Helper()
 		expectInt(t, got, 101)
 	})
 	if allocs > 500 {
@@ -95,6 +97,7 @@ func ClosureCalls() int {
 }
 `
 	allocs := measureProgramAllocs(t, src, "ClosureCalls", 10, func(t *testing.T, got []value.Value) {
+		t.Helper()
 		expectInt(t, got, 499500)
 	})
 	// Go 1.23's closure/reflect allocation accounting is a little higher,
@@ -119,6 +122,7 @@ func DirectCalls() int {
 }
 `
 	allocs := measureProgramAllocs(t, src, "DirectCalls", 20, func(t *testing.T, got []value.Value) {
+		t.Helper()
 		expectInt(t, got, 4950)
 	})
 	t.Logf("DirectCalls allocs/run = %.0f", allocs)
@@ -142,6 +146,7 @@ func BuiltinLoop() int {
 }
 `
 	allocs := measureProgramAllocs(t, src, "BuiltinLoop", 20, func(t *testing.T, got []value.Value) {
+		t.Helper()
 		expectInt(t, got, 3000)
 	})
 	t.Logf("BuiltinLoop allocs/run = %.0f", allocs)

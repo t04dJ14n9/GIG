@@ -15,12 +15,14 @@ type registryBridgeRecord struct {
 
 type countingRegistry struct {
 	*importer.Registry
+
 	packageLookups    int
 	legacyFuncLookups int
 }
 
 type legacyLookupRegistry struct {
 	*importer.Registry
+
 	function any
 	variable any
 	typ      reflect.Type
@@ -28,6 +30,7 @@ type legacyLookupRegistry struct {
 
 type variableFallbackRegistry struct {
 	*importer.Registry
+
 	variable      any
 	legacyVarHits int
 }

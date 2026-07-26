@@ -18,8 +18,8 @@ type SourceRange struct {
 	End       int `json:"end"`
 	Line      int `json:"line"`
 	Column    int `json:"column"`
-	EndLine   int `json:"endLine"`
-	EndColumn int `json:"endColumn"`
+	EndLine   int `json:"end_line"`
+	EndColumn int `json:"end_column"`
 }
 
 // Token is one scanner token. Inserted semicolons have an empty Text range.
@@ -49,7 +49,7 @@ type Diagnostic struct {
 
 // TypeFact associates semantic information with an AST occurrence.
 type TypeFact struct {
-	ASTID  int         `json:"astId"`
+	ASTID  int         `json:"ast_id"`
 	Kind   string      `json:"kind"`
 	Name   string      `json:"name,omitempty"`
 	Type   string      `json:"type,omitempty"`
@@ -82,6 +82,6 @@ type Instruction struct {
 	Result   string      `json:"result,omitempty"`
 	Type     string      `json:"type,omitempty"`
 	Operands []string    `json:"operands"`
-	ASTID    int         `json:"astId"`
+	ASTID    int         `json:"ast_id"`
 	Range    SourceRange `json:"range"`
 }

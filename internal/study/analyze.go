@@ -2,6 +2,7 @@ package study
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/importer"
 	"go/parser"
@@ -81,7 +82,8 @@ func checkTypes(fset *token.FileSet, file *ast.File, ids map[ast.Node]int, nodes
 
 func typeDiagnostic(fset *token.FileSet, err error) Diagnostic {
 	diagnostic := Diagnostic{Phase: "type", Message: err.Error()}
-	if typed, ok := err.(types.Error); ok {
+	var typed types.Error
+	if errors.As(err, &typed) {
 		pos := fset.PositionFor(typed.Pos, false)
 		diagnostic.Message = typed.Msg
 		diagnostic.Line = pos.Line
@@ -199,7 +201,8 @@ func appendScannerDiagnostics(dst []Diagnostic, phase string, err error) []Diagn
 	if err == nil {
 		return dst
 	}
-	if list, ok := err.(scanner.ErrorList); ok {
+	var list scanner.ErrorList
+	if errors.As(err, &list) {
 		for _, item := range list {
 			dst = append(dst, Diagnostic{Phase: phase, Message: item.Msg, Line: item.Pos.Line, Column: item.Pos.Column})
 		}

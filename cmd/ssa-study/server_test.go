@@ -16,6 +16,7 @@ func TestHandlerServesIndexLessonsAndAnalysis(t *testing.T) {
 	handler := newHandler()
 
 	t.Run("index", func(t *testing.T) {
+		t.Parallel()
 		response := request(t, handler, http.MethodGet, "/", nil)
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "SSA Study Lab") {
 			t.Fatalf("index response = %d %q", response.Code, response.Body.String())
@@ -29,6 +30,7 @@ func TestHandlerServesIndexLessonsAndAnalysis(t *testing.T) {
 	})
 
 	t.Run("assets", func(t *testing.T) {
+		t.Parallel()
 		for _, path := range []string{"/styles.css", "/app.js", "/renderers.js"} {
 			response := request(t, handler, http.MethodGet, path, nil)
 			if response.Code != http.StatusOK || response.Body.Len() < 100 {
@@ -38,6 +40,7 @@ func TestHandlerServesIndexLessonsAndAnalysis(t *testing.T) {
 	})
 
 	t.Run("lessons", func(t *testing.T) {
+		t.Parallel()
 		response := request(t, handler, http.MethodGet, "/api/lessons", nil)
 		if response.Code != http.StatusOK {
 			t.Fatalf("lessons status = %d: %s", response.Code, response.Body.String())
@@ -52,6 +55,7 @@ func TestHandlerServesIndexLessonsAndAnalysis(t *testing.T) {
 	})
 
 	t.Run("analysis", func(t *testing.T) {
+		t.Parallel()
 		body := bytes.NewBufferString(`{"source":"package main\nfunc add(a, b int) int { return a+b }\n"}`)
 		response := request(t, handler, http.MethodPost, "/api/analyze", body)
 		if response.Code != http.StatusOK {
@@ -81,11 +85,18 @@ func TestHandlerRejectsInvalidRequests(t *testing.T) {
 		{name: "method", method: http.MethodGet, path: "/api/analyze", body: &bytes.Buffer{}, status: http.StatusMethodNotAllowed},
 		{name: "malformed", method: http.MethodPost, path: "/api/analyze", body: bytes.NewBufferString(`{"source":`), status: http.StatusBadRequest},
 		{name: "unknown field", method: http.MethodPost, path: "/api/analyze", body: bytes.NewBufferString(`{"source":"package main","extra":true}`), status: http.StatusBadRequest},
-		{name: "oversized", method: http.MethodPost, path: "/api/analyze", body: bytes.NewBufferString(`{"source":"` + strings.Repeat("x", 70<<10) + `"}`), status: http.StatusRequestEntityTooLarge},
+		{
+			name:   "oversized",
+			method: http.MethodPost,
+			path:   "/api/analyze",
+			body:   bytes.NewBufferString(`{"source":"` + strings.Repeat("x", 70<<10) + `"}`),
+			status: http.StatusRequestEntityTooLarge,
+		},
 		{name: "unknown", method: http.MethodGet, path: "/missing", body: &bytes.Buffer{}, status: http.StatusNotFound},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			response := request(t, handler, test.method, test.path, test.body)
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())

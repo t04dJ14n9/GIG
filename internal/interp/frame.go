@@ -234,6 +234,7 @@ func (p *program) newFrameWithLayout(fn *ssa.Function, layout *frameLayout) *fra
 	const inlineFrameValueCount = 8
 	type inlineFrame struct {
 		frame
+
 		values [inlineFrameValueCount]value.Value
 	}
 

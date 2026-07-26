@@ -153,6 +153,7 @@ func TestAnalyzeErrorsPreserveEarlierStages(t *testing.T) {
 	t.Parallel()
 
 	t.Run("syntax", func(t *testing.T) {
+		t.Parallel()
 		result := Analyze(context.Background(), "package main\nfunc broken( {\n")
 		if len(result.Tokens) == 0 {
 			t.Fatal("syntax error discarded tokens")
@@ -163,6 +164,7 @@ func TestAnalyzeErrorsPreserveEarlierStages(t *testing.T) {
 	})
 
 	t.Run("type", func(t *testing.T) {
+		t.Parallel()
 		const source = "package main\nfunc broken() int { return missing }\n"
 		result := Analyze(context.Background(), source)
 		if len(result.AST) == 0 {

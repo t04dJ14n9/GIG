@@ -118,5 +118,9 @@ func writeError(w http.ResponseWriter, status int, message string) {
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	// The status line is already written, so an encode failure cannot
+	// change the response; log it instead of dropping it silently.
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		log.Printf("ssa-study: encode response: %v", err)
+	}
 }

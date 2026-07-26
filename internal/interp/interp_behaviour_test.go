@@ -90,7 +90,7 @@ func TestRunIndexAddrMaterializesReflectPointerForGenericPairFallback(t *testing
 	}
 
 	fr := prog.newFrame(fn)
-	fr.bindValue(fn.Params[0], reflectValue(reflect.ValueOf([]int{0})))
+	fr.setValue(fn.Params[0], reflectValue(reflect.ValueOf([]int{0})))
 	if err := prog.runIndexAddr(fr, indexAddr); err != nil {
 		t.Fatalf("runIndexAddr: %v", err)
 	}

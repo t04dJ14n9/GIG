@@ -143,6 +143,12 @@ func (p *program) readValue(fr *frame, v ssa.Value) (value.Value, error) {
 	if v == nil {
 		return value.MakeNil(), nil
 	}
+	// Common case first: params, locals, and instruction results all
+	// live in the frame's value slots. Consts, globals, and function
+	// references are not frame-local and fall through to the switch.
+	if stored, ok := fr.value(v); ok {
+		return stored, nil
+	}
 	switch x := v.(type) {
 	case *ssa.Const:
 		return p.constToValue(x)
@@ -172,11 +178,7 @@ func (p *program) readValue(fr *frame, v ssa.Value) (value.Value, error) {
 		// in slices/maps. No free variables.
 		return p.makeFuncValue(fr.ctx, x, nil)
 	}
-	stored, ok := fr.value(v)
-	if !ok {
-		return value.Value{}, fmt.Errorf("interp: %s: no value for %s (%T)", fr.fn.Name(), v.Name(), v)
-	}
-	return stored, nil
+	return value.Value{}, fmt.Errorf("interp: %s: no value for %s (%T)", fr.fn.Name(), v.Name(), v)
 }
 
 // constToValue translates an ssa.Const to a runtime Value. The Convert
@@ -682,7 +684,7 @@ func (p *program) runAlloc(fr *frame, instr *ssa.Alloc) error {
 		return err
 	}
 	pointer := addr.Addr()
-	fr.bindValue(instr, reflectValue(pointer))
+	fr.setValue(instr, reflectValue(pointer))
 	return nil
 }
 

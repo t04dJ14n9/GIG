@@ -89,10 +89,6 @@ func (fr *frame) setValue(v ssa.Value, val value.Value) {
 	fr.values[idx] = val
 }
 
-func (fr *frame) bindValue(v ssa.Value, val value.Value) {
-	fr.setValue(v, val)
-}
-
 func isRecoverTransparentAdapter(fn *ssa.Function) bool {
 	if fn == nil {
 		return false
@@ -154,7 +150,7 @@ func (p *program) callSSAInto(
 
 	// Bind parameters.
 	for i, param := range fn.Params {
-		fr.bindValue(param, args[i])
+		fr.setValue(param, args[i])
 	}
 
 	// Bind free variables (closures). Empty for plain functions.
@@ -175,7 +171,7 @@ func (p *program) callSSAInto(
 		if err != nil {
 			return nil, fmt.Errorf("interp: %s: alloc local %s: %w", fn.Name(), local.Name(), err)
 		}
-		fr.bindValue(local, reflectValue(addr.Addr()))
+		fr.setValue(local, reflectValue(addr.Addr()))
 	}
 
 	// Install a panic handler so deferred functions can run and

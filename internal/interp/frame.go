@@ -27,10 +27,10 @@ const (
 const cancelCheckInterval = 1024
 
 // frame is the per-call activation record for one interpreted function
-// invocation. The SSA graph is immutable; all runtime state for that
-// invocation lives here.
-// frame owns the mutable value storage for one call. Addressable SSA values
-// keep reflected pointers in these slots rather than using a separate cell.
+// invocation. The SSA graph is immutable; all runtime state for the
+// invocation — including the mutable value slot for every ssa.Value the
+// function can produce — lives here. Addressable SSA values keep
+// reflected pointers in their slots rather than using a separate cell.
 type frame struct {
 	fn        *ssa.Function
 	ctx       context.Context
@@ -113,6 +113,11 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 	return p.callSSAInto(ctx, caller, fn, args, freeVars, depth, nil)
 }
 
+// callSSAInto is callSSA plus an optional out-parameter fast path:
+// when singleResult is non-nil and the function returns exactly one
+// value, the result is written to *singleResult and the returned slice
+// is nil, sparing the caller a one-element allocation per call. Pass
+// nil to receive results as a slice.
 func (p *program) callSSAInto(
 	ctx context.Context,
 	caller *frame,

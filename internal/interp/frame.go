@@ -7,6 +7,7 @@ package interp
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
 
@@ -42,9 +43,10 @@ type frame struct {
 	iters map[ssa.Value]*rangeIter
 
 	// defer / panic / recover state.
-	defers    []*deferRecord
-	panicking bool
-	panicVal  any
+	defers        []*deferRecord
+	panicking     bool
+	panicVal      any
+	recoverTarget *frame
 
 	cancelTicks int
 }
@@ -90,6 +92,20 @@ func (fr *frame) bindValue(v ssa.Value, val value.Value) {
 	fr.setValue(v, val)
 }
 
+func isRecoverTransparentAdapter(fn *ssa.Function) bool {
+	if fn == nil {
+		return false
+	}
+	switch {
+	case strings.HasSuffix(fn.Name(), "$bound"):
+		return strings.HasPrefix(fn.Synthetic, "bound method wrapper for ")
+	case strings.HasSuffix(fn.Name(), "$thunk"):
+		return strings.HasPrefix(fn.Synthetic, "thunk for ")
+	default:
+		return false
+	}
+}
+
 // callSSA invokes an SSA function with the given args. Returns the
 // function's result tuple (zero, one, or many). depth is the current
 // call depth, bumped on every entry to catch runaway recursion.
@@ -123,9 +139,17 @@ func (p *program) callSSAInto(
 		return nil, fmt.Errorf("interp: function %s has no body", fn.Name())
 	}
 
-	fr := p.newFrame(fn, freeVars)
+	fr := p.newFrame(fn)
 	fr.ctx = ctx
 	fr.cancelTicks = 0
+	switch {
+	case caller != nil && caller.panicking:
+		fr.recoverTarget = caller
+	case caller != nil &&
+		caller.recoverTarget != nil &&
+		isRecoverTransparentAdapter(caller.fn):
+		fr.recoverTarget = caller.recoverTarget
+	}
 
 	// Bind parameters.
 	for i, param := range fn.Params {
@@ -200,12 +224,12 @@ func (p *program) callSSAInto(
 	return results, err
 }
 
-func (p *program) newFrame(fn *ssa.Function, freeVars []value.Value) *frame {
+func (p *program) newFrame(fn *ssa.Function) *frame {
 	layout := p.frameLayout(fn)
-	return p.newFrameWithLayout(fn, freeVars, layout)
+	return p.newFrameWithLayout(fn, layout)
 }
 
-func (p *program) newFrameWithLayout(fn *ssa.Function, freeVars []value.Value, layout *frameLayout) *frame {
+func (p *program) newFrameWithLayout(fn *ssa.Function, layout *frameLayout) *frame {
 	const inlineFrameValueCount = 8
 	type inlineFrame struct {
 		frame
@@ -288,11 +312,11 @@ blocks:
 			return nil, err
 		}
 
-		for _, op := range plan.ops {
+		for i := range plan.ops {
 			if err := fr.checkContext(); err != nil {
 				return nil, err
 			}
-			contState, ret, err := p.runPlannedOp(caller, fr, op, depth, singleResult)
+			contState, ret, err := p.runPlannedOp(caller, fr, &plan.ops[i], depth, singleResult)
 			if err != nil {
 				return nil, err
 			}

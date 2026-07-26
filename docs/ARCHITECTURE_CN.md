@@ -108,34 +108,33 @@ flowchart TB
 
 ## 1. 公共 API —— `gig.go`
 
-绝大多数用法只涉及四个入口：
+绝大多数用法只涉及三个入口：
 
 ```go
 prog, err := gig.Build(source, opts...)         // 编译
 result, err := prog.Run("Func", args...)        // 默认超时执行
 result, err := prog.RunWithContext(ctx, ...)    // 使用调用方 ctx
-prog.Close()                                    // 空操作，仅为源码兼容性保留
 ```
 
 `Build` 顺序执行：parse → 类型检查 → SSA 构建 → interp 初始化。可选项：
 
 - `WithRegistry(r)` —— 提供自定义 `importer.PackageRegistry`，否则使用全局
-  实例。沙盒/测试场景常用，参见 `NewSandboxRegistry()`。
+  实例。沙盒/测试场景可通过 `importer.NewRegistry()` 创建独立实例。
 - `WithAllowPanic()` —— 默认下 `panic()` 在编译期就被
   `frontend/builder.go:checkBannedPanic` 拒绝。开启后 panic/recover/defer
   按 Go 语义工作。
 
-`Run` 默认 10 秒超时（`gig.DefaultTimeout`）；超时后返回 `gig.ErrTimeout`
-（即 `context.DeadlineExceeded`）。
+`Run` 默认 10 秒超时（`gig.DefaultTimeout`）；超时后返回
+`context.DeadlineExceeded`。
 
 参数转换路径在 `Program.run()` 中：调用方的 `any` → `value.Value` （经
 `value.DefaultConverter().FromAny`），结果反向。更底层的执行仍然通过内部
 `interp.Program.Call` 使用 `value.Value`，但公开 API 只保留基于 `any` 的
 `Run` / `RunWithContext` 包装。
 
-包级别的辅助函数（`RegisterPackage`、`GetPackageByPath`、`GetAllPackages`）
-是 `importer.GlobalRegistry()` 的薄包装 —— 全局 registry 是标准库 wrapper
-通过 `init()` 来填充的对象。
+注册和查询辅助函数位于 `importer` 包：`RegisterPackage`、
+`GetPackageByPath`、`GetPackageByName`、`GetAllPackages` 都操作
+`importer.GlobalRegistry()`；标准库 wrapper 通过 `init()` 填充该全局实例。
 
 ---
 

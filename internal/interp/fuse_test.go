@@ -94,7 +94,7 @@ func MakeSliceArray() int {
 	if alloc == nil || slice == nil {
 		t.Fatalf("expected SSA Alloc+Slice, got alloc=%v slice=%v", alloc, slice)
 	}
-	fr := prog.newFrame(fn, nil)
+	fr := prog.newFrame(fn)
 	if _, _, err := prog.runAlloc(fr, alloc); err != nil {
 		t.Fatalf("runAlloc: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestRunIndexAddrMaterializesReflectPointerForGenericPairFallback(t *testing
 		t.Fatal("Store has no IndexAddr")
 	}
 
-	fr := prog.newFrame(fn, nil)
+	fr := prog.newFrame(fn)
 	fr.bindValue(fn.Params[0], reflectValue(reflect.ValueOf([]int{0})))
 	if _, _, err := prog.runIndexAddr(fr, indexAddr); err != nil {
 		t.Fatalf("runIndexAddr: %v", err)
@@ -268,7 +268,7 @@ func TestFrameUsesOneCanonicalValuePerSSAValue(t *testing.T) {
 	fn := unit.Package().Func("Identity")
 	prog := &program{}
 	layout := prog.frameLayout(fn)
-	fr := prog.newFrameWithLayout(fn, nil, layout)
+	fr := prog.newFrameWithLayout(fn, layout)
 	param := fn.Params[0]
 	idx, ok := fr.layout.index[param]
 	if !ok {
@@ -286,7 +286,7 @@ func TestFrameUsesOneCanonicalValuePerSSAValue(t *testing.T) {
 	if !ok || indexed.Int() != fr.values[idx].Int() {
 		t.Fatal("layout index did not select the canonical value")
 	}
-	second := prog.newFrameWithLayout(fn, nil, layout)
+	second := prog.newFrameWithLayout(fn, layout)
 	if &fr.values[idx] == &second.values[idx] {
 		t.Fatal("frames share mutable value storage")
 	}

@@ -1,10 +1,7 @@
-// registry_bridge.go provides FromRegistry, a stop-gap host.Environment
-// that delegates to the legacy importer.PackageRegistry. It exists so
-// the new SSA pipeline can run against the same external-package
-// definitions (fmt, strings, ...) that legacy gig already supports —
-// while still allowing hot external functions and methods to register
-// value.Value-based DirectCall wrappers. Calls without wrappers fall
-// back to reflect.Call.
+// registry_bridge.go provides the registry-backed host.Environment used by
+// the SSA pipeline. Registered external-package definitions (fmt, strings,
+// ...) may include value.Value-based DirectCall wrappers for hot functions
+// and methods; calls without wrappers fall back to reflect.Call.
 package host
 
 import (
@@ -17,8 +14,8 @@ import (
 	"github.com/t04dJ14n9/gig/value"
 )
 
-// FromRegistry wraps a legacy importer.PackageRegistry in a
-// host.Environment.
+// FromRegistry exposes an importer.PackageRegistry through the explicit
+// host.Environment boundary.
 func FromRegistry(reg importer.PackageRegistry) Environment {
 	return &registryBridge{reg: reg, imp: importer.NewImporter(reg)}
 }
@@ -28,7 +25,7 @@ type registryBridge struct {
 	imp *importer.Importer
 }
 
-// Import satisfies types.Importer by delegating to the legacy importer.
+// Import satisfies types.Importer by delegating to the registry importer.
 func (b *registryBridge) Import(path string) (*types.Package, error) {
 	return b.imp.Import(path)
 }
@@ -68,7 +65,7 @@ func (b *registryBridge) lookupObject(pkgPath, name string, want external.Object
 	return pkg, obj, true
 }
 
-// LookupFunc returns a host.Function backed by the legacy registry's
+// LookupFunc returns a host.Function backed by the registry's
 // function metadata. Generated DirectCall wrappers run without
 // reflect.Value.Call; functions without wrappers fall back to reflect.
 func (b *registryBridge) LookupFunc(pkgPath, name string) (Function, bool) {
@@ -94,7 +91,7 @@ func (b *registryBridge) LookupFunc(pkgPath, name string) (Function, bool) {
 }
 
 // LookupVar returns the host-side address of a registered variable.
-// The legacy registry hands back the variable's *T address; we wrap
+// The registry hands back the variable's *T address; we wrap
 // the pointed-at value (T) but record the address-rv so Set can update
 // the storage slot. SSA programs read globals via UnOp(MUL) on the
 // global pointer, so the value we return must already be the pointee
@@ -129,7 +126,7 @@ func newReflectVar(name string, ptr any) (Variable, bool) {
 	return &reflectVar{name: name, rv: target, addr: addr}, true
 }
 
-// LookupConst is best-effort: legacy gig stores const values inside the
+// LookupConst is best-effort: registered const values live inside the
 // ExternalPackage's Objects map. Pull from there.
 func (b *registryBridge) LookupConst(pkgPath, name string) (Constant, bool) {
 	_, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindConstant)
@@ -145,7 +142,7 @@ func (b *registryBridge) LookupConst(pkgPath, name string) (Constant, bool) {
 }
 
 // LookupType returns a host.Type for a named type registered in the
-// legacy registry.
+// registry.
 func (b *registryBridge) LookupType(pkgPath, name string) (Type, bool) {
 	pkg, obj, ok := b.lookupObject(pkgPath, name, external.ObjectKindType)
 	if ok {
@@ -208,7 +205,7 @@ func (b *registryBridge) LookupReflectType(t types.Type) (reflect.Type, bool) {
 }
 
 // LookupMethod resolves a method DirectCall wrapper registered for a
-// host-defined named type. typeName uses the legacy key convention:
+// host-defined named type. typeName uses the registry key convention:
 // import/path.TypeName, for example "strings.Reader".
 func (b *registryBridge) LookupMethod(typeName, methodName string) (Method, bool) {
 	if b.reg == nil {

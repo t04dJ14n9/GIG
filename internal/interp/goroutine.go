@@ -18,26 +18,22 @@ import (
 
 func (p *program) runGo(fr *frame, instr *ssa.Go) (continuation, []value.Value, error) {
 	common := instr.Common()
-	args := make([]value.Value, len(common.Args))
-	for i, a := range common.Args {
-		v, err := p.readValue(fr, a)
-		if err != nil {
-			return contNext, nil, err
-		}
-		args[i] = v
+	args, err := p.readValuesInto(fr, common.Args, nil)
+	if err != nil {
+		return contNext, nil, err
 	}
 	switch tgt := common.Value.(type) {
 	case *ssa.Function:
 		ctx := fr.ctx
 		go func() {
 			defer func() { _ = recover() }()
-			_, _ = p.callSSA(ctx, nil, tgt, args, nil, 0)
+			_, _ = p.callStaticFunction(ctx, nil, tgt, args, 0)
 		}()
 		return contNext, nil, nil
 	case *ssa.Builtin:
 		go func() {
 			defer func() { _ = recover() }()
-			_, _ = p.callBuiltinDirect(nil, tgt, args)
+			_, _ = p.executeBuiltin(nil, tgt, args)
 		}()
 		return contNext, nil, nil
 	}
@@ -53,14 +49,9 @@ func (p *program) runGo(fr *frame, instr *ssa.Go) (continuation, []value.Value, 
 	if rv.Kind() != reflect.Func {
 		return contNext, nil, fmt.Errorf("interp: go target not callable (kind=%s)", rv.Kind())
 	}
-	rargs := make([]reflect.Value, len(args))
-	conv := value.DefaultConverter()
-	for i, a := range args {
-		ra, err := conv.ToReflect(a, rv.Type().In(i))
-		if err != nil {
-			return contNext, nil, err
-		}
-		rargs[i] = ra
+	rargs, err := p.reflectArgs(rv.Type(), args)
+	if err != nil {
+		return contNext, nil, err
 	}
 	go func() {
 		defer func() { _ = recover() }()
@@ -105,11 +96,6 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 	cases := make([]reflect.SelectCase, 0, len(instr.States)+1)
 	if !instr.Blocking {
 		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectDefault})
-	}
-	type recvSlot struct {
-		idx      int
-		elemRT   reflect.Type
-		assigned bool
 	}
 	for _, st := range instr.States {
 		ch, err := p.readValue(fr, st.Chan)

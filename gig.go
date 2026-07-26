@@ -30,9 +30,6 @@ import (
 // DefaultTimeout is the default execution timeout for Run.
 const DefaultTimeout = 10 * time.Second
 
-// ErrTimeout is returned when execution times out.
-var ErrTimeout = context.DeadlineExceeded
-
 // buildConfig holds internal configuration parsed from BuildOption values.
 type buildConfig struct {
 	registry   importer.PackageRegistry
@@ -56,8 +53,7 @@ func WithAllowPanic() BuildOption {
 
 // Program represents a compiled Go program ready for execution.
 type Program struct {
-	prog       interp.Program
-	allowPanic bool
+	prog interp.Program
 }
 
 // Build compiles Go source code into a Program.
@@ -84,13 +80,8 @@ func Build(sourceCode string, opts ...BuildOption) (*Program, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Program{prog: prog, allowPanic: cfg.allowPanic}, nil
+	return &Program{prog: prog}, nil
 }
-
-// Close releases resources associated with the Program.
-// The v2 interpreter has no global registries to unwind; this is a
-// no-op kept for source compatibility.
-func (p *Program) Close() {}
 
 // Run executes a function with the default timeout.
 func (p *Program) Run(funcName string, params ...any) (any, error) {
@@ -108,7 +99,7 @@ func (p *Program) RunWithContext(ctx context.Context, funcName string, params ..
 }
 
 // run is the shared dispatch path. It converts arguments, calls the
-// interpreter program, and unwraps results to the legacy any/[]any/nil
+// interpreter program, and unwraps results to the documented any/[]any/nil
 // shape Run/RunWithContext are documented to return.
 func (p *Program) run(ctx context.Context, funcName string, params ...any) (a any, err error) {
 	defer func() {
@@ -149,29 +140,4 @@ func (p *Program) run(ctx context.Context, funcName string, params ...any) (a an
 		}
 		return out, nil
 	}
-}
-
-// NewSandboxRegistry creates a fresh, empty PackageRegistry for sandboxed execution.
-func NewSandboxRegistry() importer.PackageRegistry {
-	return importer.NewRegistry()
-}
-
-// RegisterPackage registers an external package for use in interpreted code.
-func RegisterPackage(path, name string) *importer.ExternalPackage {
-	return importer.RegisterPackage(path, name)
-}
-
-// GetPackageByPath returns a registered package by import path.
-func GetPackageByPath(path string) *importer.ExternalPackage {
-	return importer.GetPackageByPath(path)
-}
-
-// GetPackageByName returns a registered package by name.
-func GetPackageByName(name string) *importer.ExternalPackage {
-	return importer.GetPackageByName(name)
-}
-
-// GetAllPackages returns all registered packages.
-func GetAllPackages() map[string]*importer.ExternalPackage {
-	return importer.GetAllPackages()
 }

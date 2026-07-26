@@ -27,8 +27,8 @@ func Fib(n int) int {
 	}
 	p := &program{}
 
-	fr1 := p.newFrame(fn, nil)
-	fr2 := p.newFrame(fn, nil)
+	fr1 := p.newFrame(fn)
+	fr2 := p.newFrame(fn)
 	if fr1 == fr2 {
 		t.Fatalf("newFrame reused a frame; want a fresh frame per call")
 	}

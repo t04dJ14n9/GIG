@@ -89,6 +89,7 @@ func GenerateBarrelImport(outDir string, modulePath string, generatedPkgs []stri
 		code = []byte(b.String())
 	}
 	outFile := filepath.Join(outDir, "packages", "stdlib.go")
+	// #nosec G306 -- Generated Go source follows normal compiler-readable permissions and remains restricted by the caller's umask.
 	return os.WriteFile(outFile, code, 0o666)
 }
 
@@ -282,6 +283,7 @@ func PackageImport(path string, outDir string, pkgName string) error {
 
 	filename := filepath.Join(outDir, goPkgName+".go")
 	fmt.Printf("  -> %s\n", filename)
+	// #nosec G306 -- Generated Go source follows normal compiler-readable permissions and remains restricted by the caller's umask.
 	return os.WriteFile(filename, code, 0o666)
 }
 

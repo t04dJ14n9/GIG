@@ -73,8 +73,8 @@ func outer(x int) func(int) int {
 func TestFramesShareLayoutButOwnValues(t *testing.T) {
 	p, fn := buildFrameValueFixture(t, `func Echo(x int) int { return x }`, "Echo")
 	layout := p.frameLayout(fn)
-	first := p.newFrameWithLayout(fn, nil, layout)
-	second := p.newFrameWithLayout(fn, nil, layout)
+	first := p.newFrameWithLayout(fn, layout)
+	second := p.newFrameWithLayout(fn, layout)
 
 	if first.layout != second.layout || first.layout != layout {
 		t.Fatal("frames do not share their immutable layout")

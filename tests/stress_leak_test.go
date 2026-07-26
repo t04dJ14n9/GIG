@@ -67,8 +67,6 @@ func runStressMemoryLeak(b *testing.B, duration time.Duration) {
 	if err != nil {
 		b.Fatalf("Build error: %v", err)
 	}
-	defer prog.Close()
-
 	// Memory tracking
 	var memStats runtime.MemStats
 	runtime.GC()

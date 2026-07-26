@@ -309,7 +309,7 @@ func (r intRef) read(fr *frame) int64 {
 	return fr.values[r.valueIndex].Int()
 }
 
-func (p *program) runPlannedOp(caller *frame, fr *frame, op plannedOp, depth int, singleResult *value.Value) (continuation, []value.Value, error) {
+func (p *program) runPlannedOp(caller *frame, fr *frame, op *plannedOp, depth int, singleResult *value.Value) (continuation, []value.Value, error) {
 	switch op.kind {
 	case planGeneric:
 		return p.visitInstr(caller, fr, op.instr, depth, singleResult)

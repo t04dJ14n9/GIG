@@ -11,7 +11,7 @@ import (
 
 func TestReadValuesIntoUsesSingleScratchSlot(t *testing.T) {
 	p, fn := buildFrameValueFixture(t, `func Echo(x int) int { return x }`, "Echo")
-	fr := p.newFrame(fn, nil)
+	fr := p.newFrame(fn)
 	fr.setValue(fn.Params[0], value.MakeInt(17))
 	var scratch [1]value.Value
 	args, err := p.readValuesInto(fr, []ssa.Value{fn.Params[0]}, scratch[:0])
@@ -28,7 +28,7 @@ func TestReadValuesIntoUsesSingleScratchSlot(t *testing.T) {
 
 func TestReadValuesIntoAllocatesForLargerShape(t *testing.T) {
 	p, fn := buildFrameValueFixture(t, `func Add(x, y int) int { return x + y }`, "Add")
-	fr := p.newFrame(fn, nil)
+	fr := p.newFrame(fn)
 	fr.setValue(fn.Params[0], value.MakeInt(2))
 	fr.setValue(fn.Params[1], value.MakeInt(3))
 	var scratch [1]value.Value

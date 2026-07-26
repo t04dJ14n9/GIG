@@ -68,6 +68,13 @@ New goroutines must also start with independent call ancestry. A direct SSA or
 builtin target launched by `runGo` must not inherit the spawning frame as its
 `caller`, because `recover()` may only observe panic state in its own goroutine.
 
+Deferred recovery ancestry is a narrow capability, not general caller ancestry.
+It must reach the function or method that was directly deferred, including
+interface dispatch and the synthetic bound and thunk adapters emitted by
+`golang.org/x/tools/go/ssa`. It must not flow through an ordinary helper called
+by that deferred function or method, because Go only permits `recover()` when it
+is called directly by the deferred callable.
+
 ### CLI version and interactive-mode removal
 
 - Update `cmd/gig/go.mod` from Gig v1.7.6 to v1.7.7 and refresh only the module
@@ -127,6 +134,14 @@ The existing nested-goroutine and concurrent panic/recover regression tests run
 under the race detector and remain part of the release gate. Add a deterministic
 test proving that `recover()` in a child goroutine cannot consume a parent
 goroutine's panic.
+
+Add native-parity regressions proving that:
+
+1. a directly deferred interface method can recover;
+2. deferred concrete and interface bound method values can recover;
+3. deferred method expressions can recover, with a promoted method retained as
+   a native-parity control; and
+4. an ordinary helper called by a deferred function still cannot recover.
 
 ### CLI removal regression test
 

@@ -5,7 +5,34 @@ import (
 	"testing"
 
 	"github.com/t04dJ14n9/gig/internal/frontend"
+	"github.com/t04dJ14n9/gig/value"
 )
+
+func measureProgramAllocs(t *testing.T, src, function string, runs int, check func(*testing.T, []value.Value)) float64 {
+	t.Helper()
+	ctx := context.Background()
+	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
+	if err != nil {
+		t.Fatalf("NewProgram: %v", err)
+	}
+	warm, err := prog.Call(ctx, function, nil)
+	if err != nil {
+		t.Fatalf("warm Call: %v", err)
+	}
+	check(t, warm)
+
+	return testing.AllocsPerRun(runs, func() {
+		got, err := prog.Call(ctx, function, nil)
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		check(t, got)
+	})
+}
 
 func TestInterpArithmeticLoopAllocationsAreBounded(t *testing.T) {
 	const src = `
@@ -17,29 +44,8 @@ func ArithmeticSum() int {
 	return sum
 }
 `
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
-	if err != nil {
-		t.Fatalf("NewProgram: %v", err)
-	}
-	if got, err := prog.Call(ctx, "ArithmeticSum", nil); err != nil {
-		t.Fatalf("warm Call: %v", err)
-	} else {
+	allocs := measureProgramAllocs(t, src, "ArithmeticSum", 20, func(t *testing.T, got []value.Value) {
 		expectInt(t, got, 500500)
-	}
-
-	allocs := testing.AllocsPerRun(20, func() {
-		got, err := prog.Call(ctx, "ArithmeticSum", nil)
-		if err != nil {
-			t.Fatalf("Call: %v", err)
-		}
-		if len(got) != 1 || got[0].Int() != 500500 {
-			t.Fatalf("ArithmeticSum = %v, want 500500", got)
-		}
 	})
 	if allocs > 100 {
 		t.Fatalf("ArithmeticSum allocs/run = %.0f, want <= 100", allocs)
@@ -66,26 +72,7 @@ func BubbleSort() int {
 	return s[0] + s[99]
 }
 `
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
-	if err != nil {
-		t.Fatalf("NewProgram: %v", err)
-	}
-	if got, err := prog.Call(ctx, "BubbleSort", nil); err != nil {
-		t.Fatalf("warm Call: %v", err)
-	} else {
-		expectInt(t, got, 101)
-	}
-
-	allocs := testing.AllocsPerRun(10, func() {
-		got, err := prog.Call(ctx, "BubbleSort", nil)
-		if err != nil {
-			t.Fatalf("Call: %v", err)
-		}
+	allocs := measureProgramAllocs(t, src, "BubbleSort", 10, func(t *testing.T, got []value.Value) {
 		expectInt(t, got, 101)
 	})
 	if allocs > 500 {
@@ -107,26 +94,7 @@ func ClosureCalls() int {
 	return sum
 }
 `
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
-	if err != nil {
-		t.Fatalf("NewProgram: %v", err)
-	}
-	if got, err := prog.Call(ctx, "ClosureCalls", nil); err != nil {
-		t.Fatalf("warm Call: %v", err)
-	} else {
-		expectInt(t, got, 499500)
-	}
-
-	allocs := testing.AllocsPerRun(10, func() {
-		got, err := prog.Call(ctx, "ClosureCalls", nil)
-		if err != nil {
-			t.Fatalf("Call: %v", err)
-		}
+	allocs := measureProgramAllocs(t, src, "ClosureCalls", 10, func(t *testing.T, got []value.Value) {
 		expectInt(t, got, 499500)
 	})
 	// Go 1.23's closure/reflect allocation accounting is a little higher,
@@ -150,26 +118,7 @@ func DirectCalls() int {
 	return sum
 }
 `
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
-	if err != nil {
-		t.Fatalf("NewProgram: %v", err)
-	}
-	if got, err := prog.Call(ctx, "DirectCalls", nil); err != nil {
-		t.Fatalf("warm Call: %v", err)
-	} else {
-		expectInt(t, got, 4950)
-	}
-
-	allocs := testing.AllocsPerRun(20, func() {
-		got, err := prog.Call(ctx, "DirectCalls", nil)
-		if err != nil {
-			t.Fatalf("Call: %v", err)
-		}
+	allocs := measureProgramAllocs(t, src, "DirectCalls", 20, func(t *testing.T, got []value.Value) {
 		expectInt(t, got, 4950)
 	})
 	t.Logf("DirectCalls allocs/run = %.0f", allocs)
@@ -178,5 +127,25 @@ func DirectCalls() int {
 	// and result scratch slot at every direct interpreted call.
 	if allocs > 120 {
 		t.Fatalf("DirectCalls allocs/run = %.0f, want <= 120", allocs)
+	}
+}
+
+func TestInterpBuiltinLoopAllocationsAreBounded(t *testing.T) {
+	const src = `
+func BuiltinLoop() int {
+	values := make([]int, 3)
+	total := 0
+	for i := 0; i < 1000; i++ {
+		total += len(values)
+	}
+	return total
+}
+`
+	allocs := measureProgramAllocs(t, src, "BuiltinLoop", 20, func(t *testing.T, got []value.Value) {
+		expectInt(t, got, 3000)
+	})
+	t.Logf("BuiltinLoop allocs/run = %.0f", allocs)
+	if allocs > 200 {
+		t.Fatalf("BuiltinLoop allocs/run = %.0f, want <= 200", allocs)
 	}
 }

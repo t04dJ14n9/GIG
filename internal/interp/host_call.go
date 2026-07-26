@@ -74,7 +74,7 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 	// Method on a host type — dispatch through reflect.MethodByName on
 	// the receiver. SSA emits these with the receiver as args[0].
 	if fn.Signature.Recv() != nil && len(args) > 0 {
-		return p.invokeMethodOn(ctx, args[0], fn.Name(), args[1:])
+		return p.invokeMethodOn(ctx, nil, args[0], fn.Name(), args[1:])
 	}
 	// Free function.
 	hf, ok := p.lookupHostFunc(fn, pkgPath)
@@ -83,7 +83,7 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 		// like bytes/list whose methods register through the legacy
 		// MethodDirectCall path that LookupFunc doesn't see.
 		if len(args) > 0 {
-			dispatch, err := p.tryInvokeMethodOn(ctx, args[0], fn.Name(), args[1:])
+			dispatch, err := p.tryInvokeMethodOn(ctx, nil, args[0], fn.Name(), args[1:])
 			if err != nil {
 				return nil, err
 			}
@@ -114,8 +114,8 @@ func (p *program) lookupHostFunc(fn *ssa.Function, pkgPath string) (host.Functio
 // invokeMethodOn calls receiver.method(args), trying first the
 // interpreted SSA package (for methods on user-defined types) and then
 // reflect.MethodByName on the host receiver.
-func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, method string, args []value.Value) ([]value.Value, error) {
-	dispatch, err := p.tryInvokeMethodOn(ctx, receiver, method, args)
+func (p *program) invokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value) ([]value.Value, error) {
+	dispatch, err := p.tryInvokeMethodOn(ctx, caller, receiver, method, args)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +125,7 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 	return dispatch.results, nil
 }
 
-func (p *program) tryInvokeMethodOn(ctx context.Context, receiver value.Value, method string, args []value.Value) (methodDispatchResult, error) {
+func (p *program) tryInvokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value) (methodDispatchResult, error) {
 	// Methods declared on interpreted types live as SSA functions on
 	// the package, named like "(*AdderStruct).Add" or "AdderStruct.Add".
 	// When the receiver arrived through a MakeInterface box we unwrap
@@ -151,10 +151,9 @@ func (p *program) tryInvokeMethodOn(ctx context.Context, receiver value.Value, m
 		recv := p.adjustReceiverShape(dynRecv, fn)
 		all := append([]value.Value{recv}, args...)
 		dispatch.found = true
-		dispatch.results, err = p.callSSA(ctx, nil, fn, all, nil, 0)
+		dispatch.results, err = p.callSSA(ctx, caller, fn, all, nil, 0)
 		return dispatch, err
 	}
-	conv := value.DefaultConverter()
 	m := rv.MethodByName(method)
 	if !m.IsValid() {
 		// Try addressable (pointer) receiver — Go auto-takes the
@@ -172,26 +171,14 @@ func (p *program) tryInvokeMethodOn(ctx context.Context, receiver value.Value, m
 	}
 	dispatch.found = true
 	mt := m.Type()
-	rargs := make([]reflect.Value, len(args))
-	for i, a := range args {
-		var target reflect.Type
-		if i < mt.NumIn() {
-			target = mt.In(i)
-		}
-		ra, err := conv.ToReflect(a, target)
-		if err != nil {
-			return dispatch, fmt.Errorf("interp: method %s arg %d: %w", method, i, err)
-		}
-		rargs[i] = ra
+	rargs, err := p.reflectArgs(mt, args)
+	if err != nil {
+		return dispatch, fmt.Errorf("interp: method %s %w", method, err)
 	}
 	rresults := m.Call(rargs)
-	out := make([]value.Value, len(rresults))
-	for i, r := range rresults {
-		v, err := conv.FromReflect(r)
-		if err != nil {
-			return dispatch, fmt.Errorf("interp: method %s result %d: %w", method, i, err)
-		}
-		out[i] = v
+	out, err := p.valuesFromReflect(rresults)
+	if err != nil {
+		return dispatch, fmt.Errorf("interp: method %s %w", method, err)
 	}
 	dispatch.results = out
 	return dispatch, nil

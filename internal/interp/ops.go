@@ -454,7 +454,7 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 		return p.runInvokeCall(caller, fr, instr, common, depth)
 	}
 	if builtin, ok := common.Value.(*ssa.Builtin); ok {
-		out, err := p.callBuiltin(caller, fr, builtin, common.Args)
+		out, err := p.callBuiltin(fr, builtin, common.Args)
 		if err != nil {
 			return contNext, nil, err
 		}
@@ -480,14 +480,21 @@ func (p *program) readValuesInto(fr *frame, refs []ssa.Value, scratch []value.Va
 	} else {
 		values = make([]value.Value, len(refs))
 	}
+	if err := p.fillValues(fr, refs, values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func (p *program) fillValues(fr *frame, refs []ssa.Value, dst []value.Value) error {
 	for i, ref := range refs {
 		resolved, err := p.readValue(fr, ref)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		values[i] = resolved
+		dst[i] = resolved
 	}
-	return values, nil
+	return nil
 }
 
 func (p *program) finishCall(fr *frame, instr *ssa.Call, results []value.Value) (continuation, []value.Value, error) {
@@ -511,7 +518,7 @@ func (p *program) runInvokeCall(_ *frame, fr *frame, instr *ssa.Call, common *ss
 	if err != nil {
 		return contNext, nil, err
 	}
-	results, err := p.invokeMethodOn(fr.ctx, recvV, common.Method.Name(), args)
+	results, err := p.invokeMethodOn(fr.ctx, fr, recvV, common.Method.Name(), args)
 	if err != nil {
 		return contNext, nil, err
 	}
@@ -602,21 +609,14 @@ func (p *program) runIndirectCall(fr *frame, instr *ssa.Call, common *ssa.CallCo
 	if err != nil {
 		return contNext, nil, err
 	}
-	rargs := make([]reflect.Value, len(args))
-	for i, arg := range args {
-		rargs[i], err = p.converter.ToReflect(arg, rv.Type().In(i))
-		if err != nil {
-			return contNext, nil, err
-		}
+	rargs, err := p.reflectArgs(rv.Type(), args)
+	if err != nil {
+		return contNext, nil, err
 	}
 	rresults := rv.Call(rargs)
-	results := make([]value.Value, len(rresults))
-	for i, r := range rresults {
-		v, err := p.converter.FromReflect(r)
-		if err != nil {
-			return contNext, nil, err
-		}
-		results[i] = v
+	results, err := p.valuesFromReflect(rresults)
+	if err != nil {
+		return contNext, nil, err
 	}
 	return p.finishCall(fr, instr, results)
 }
@@ -652,150 +652,20 @@ func (p *program) packResults(t types.Type, results []value.Value) (value.Value,
 	return reflectValue(holder), nil
 }
 
-// callBuiltin handles the universe-block call targets (len, cap,
-// append, copy, delete, print, println, panic, recover, real, imag,
-// complex). It returns a single Value or an error; callers store the
-// result in the SSA instruction's frame value.
-func (p *program) callBuiltin(caller *frame, fr *frame, b *ssa.Builtin, ssaArgs []ssa.Value) (value.Value, error) {
-	args := make([]value.Value, len(ssaArgs))
-	for i, a := range ssaArgs {
-		v, err := p.readValue(fr, a)
-		if err != nil {
-			return value.Value{}, err
-		}
-		args[i] = v
+// callBuiltin resolves SSA operands before delegating to the canonical
+// builtin executor.
+func (p *program) callBuiltin(fr *frame, b *ssa.Builtin, ssaArgs []ssa.Value) (value.Value, error) {
+	var inline [2]value.Value
+	args := inline[:]
+	if len(ssaArgs) > len(inline) {
+		args = make([]value.Value, len(ssaArgs))
+	} else {
+		args = args[:len(ssaArgs)]
 	}
-	switch b.Name() {
-	case "len":
-		rv, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-			rv = rv.Elem()
-		}
-		return value.MakeInt(int64(rv.Len())), nil
-	case "cap":
-		rv, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-			rv = rv.Elem()
-		}
-		return value.MakeInt(int64(rv.Cap())), nil
-	case "append":
-		if len(args) < 1 {
-			return value.MakeNil(), nil
-		}
-		baseRV, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		if !baseRV.IsValid() {
-			baseRV = reflect.Zero(reflect.TypeOf([]any{}))
-		}
-		// Variadic append produces (slice, slice...) when called as
-		// append(a, b...) — SSA encodes that with a single second arg
-		// that is itself a slice of the right type. Otherwise each
-		// trailing arg is a single element.
-		if len(args) == 2 {
-			otherRV, err := p.reflectOf(args[1], baseRV.Type())
-			if err != nil {
-				return value.Value{}, err
-			}
-			if otherRV.Kind() == reflect.Slice && otherRV.Type() == baseRV.Type() {
-				return reflectValue(reflect.AppendSlice(baseRV, otherRV)), nil
-			}
-		}
-		extras := make([]reflect.Value, 0, len(args)-1)
-		elemRT := baseRV.Type().Elem()
-		for _, a := range args[1:] {
-			rv, err := p.reflectOf(a, elemRT)
-			if err != nil {
-				return value.Value{}, err
-			}
-			extras = append(extras, rv)
-		}
-		return reflectValue(reflect.Append(baseRV, extras...)), nil
-	case "copy":
-		dst, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		src, err := p.reflectOf(args[1], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		return value.MakeInt(int64(reflect.Copy(dst, src))), nil
-	case "delete":
-		m, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		k, err := p.reflectOf(args[1], m.Type().Key())
-		if err != nil {
-			return value.Value{}, err
-		}
-		m.SetMapIndex(k, reflect.Value{})
-		return value.MakeNil(), nil
-	case "print", "println":
-		// Best-effort: print to host stdout. A full implementation
-		// would route into the interpreter's output capture (Phase 6.7);
-		// for the current pass-the-tests goal this matches Go's
-		// print/println behaviour well enough — most tests don't
-		// assert on print output.
-		parts := make([]any, len(args))
-		for i, a := range args {
-			parts[i] = a.Interface()
-		}
-		_ = parts // we deliberately drop the print to keep tests deterministic
-		return value.MakeNil(), nil
-	case "panic":
-		if len(args) > 0 {
-			panic(args[0].Interface())
-		}
-		panic("panic with no argument")
-	case "recover":
-		// recover() consumes panic state from the deferring frame.
-		// In a directly-deferred function the deferring frame and the
-		// running frame are the same (fr is panicking). In a deferred
-		// closure they differ: the closure runs in its own frame whose
-		// caller is the panicking frame, so we consult caller. Using the
-		// threaded caller (rather than shared program state) keeps this
-		// per-goroutine — concurrent interpreted goroutines that panic
-		// must not observe each other's panic frame.
-		var target *frame
-		if fr.panicking {
-			target = fr
-		} else if caller != nil && caller.panicking {
-			target = caller
-		}
-		if target != nil && target.panicking {
-			v := target.panicVal
-			target.panicking = false
-			target.panicVal = nil
-			conv := value.DefaultConverter()
-			return conv.FromAny(v)
-		}
-		return value.MakeNil(), nil
-	case "real":
-		c := args[0].Complex()
-		return value.MakeFloat(real(c)), nil
-	case "imag":
-		c := args[0].Complex()
-		return value.MakeFloat(imag(c)), nil
-	case "complex":
-		return value.MakeComplex(args[0].Float(), args[1].Float()), nil
-	case "close":
-		rv, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		rv.Close()
-		return value.MakeNil(), nil
+	if err := p.fillValues(fr, ssaArgs, args); err != nil {
+		return value.Value{}, err
 	}
-	return value.Value{}, fmt.Errorf("interp: builtin %s not supported", b.Name())
+	return p.executeBuiltin(fr, b, args)
 }
 
 func (p *program) runAlloc(fr *frame, instr *ssa.Alloc) (continuation, []value.Value, error) {

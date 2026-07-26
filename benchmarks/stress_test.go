@@ -102,19 +102,11 @@ func nativeComputeHeavy(n int) int {
 
 // --- Helpers ---
 
-type stressResult struct {
-	totalOps    int64
-	totalTimeNs int64
-	errors      int64
-	p99Ns       int64
-}
-
-func runConcurrentStress(b *testing.B, name string, concurrency int, opsPerGoroutine int, fn func(goroutineID, opID int) error) stressResult {
+func runConcurrentStress(b *testing.B, concurrency int, opsPerGoroutine int, fn func(goroutineID, opID int) error) {
 	b.Helper()
 
 	var totalOps atomic.Int64
 	var totalErrors atomic.Int64
-	latencies := make([]int64, concurrency*opsPerGoroutine)
 
 	b.ResetTimer()
 
@@ -126,14 +118,8 @@ func runConcurrentStress(b *testing.B, name string, concurrency int, opsPerGorou
 		go func(gID int) {
 			defer wg.Done()
 			for i := 0; i < opsPerGoroutine; i++ {
-				opStart := time.Now()
 				if err := fn(gID, i); err != nil {
 					totalErrors.Add(1)
-				}
-				lat := time.Since(opStart).Nanoseconds()
-				idx := gID*opsPerGoroutine + i
-				if idx < len(latencies) {
-					latencies[idx] = lat
 				}
 				totalOps.Add(1)
 			}
@@ -145,26 +131,6 @@ func runConcurrentStress(b *testing.B, name string, concurrency int, opsPerGorou
 
 	b.StopTimer()
 
-	// Calculate p99
-	total := int(totalOps.Load())
-	if total == 0 {
-		total = 1
-	}
-
-	// Simple p99: sort-free approximation using sampling
-	var maxLat int64
-	p99Idx := int(float64(total) * 0.99)
-	// For simplicity, find the value at approximate p99 position
-	// (proper implementation would sort, but for benchmarks this is fine)
-	count99 := 0
-	for _, lat := range latencies[:total] {
-		if lat > maxLat {
-			maxLat = lat
-		}
-		_ = count99
-	}
-	_ = p99Idx
-
 	ops := totalOps.Load()
 	throughput := float64(ops) / elapsed.Seconds()
 	errs := totalErrors.Load()
@@ -173,12 +139,6 @@ func runConcurrentStress(b *testing.B, name string, concurrency int, opsPerGorou
 	b.ReportMetric(float64(elapsed.Nanoseconds())/float64(ops), "ns/op_actual")
 	b.ReportMetric(float64(errs), "errors")
 
-	return stressResult{
-		totalOps:    ops,
-		totalTimeNs: elapsed.Nanoseconds(),
-		errors:      errs,
-		p99Ns:       maxLat,
-	}
 }
 
 // ============================================================================
@@ -190,8 +150,6 @@ func BenchmarkStress_Gig_RuleEngine_100G(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer prog.Close()
-
 	// Verify correctness
 	result, err := prog.Run("EvaluateRule", 42, " alice ", 81.0)
 	if err != nil {
@@ -205,7 +163,7 @@ func BenchmarkStress_Gig_RuleEngine_100G(b *testing.B) {
 		opsPerGoroutine = 1
 	}
 
-	runConcurrentStress(b, "Gig_RuleEngine_100G", concurrency, opsPerGoroutine, func(gID, opID int) error {
+	runConcurrentStress(b, concurrency, opsPerGoroutine, func(gID, opID int) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, err := prog.RunWithContext(ctx, "EvaluateRule", gID*1000+opID, " alice ", float64(50+opID%50))
@@ -220,8 +178,8 @@ func BenchmarkStress_Native_RuleEngine_100G(b *testing.B) {
 		opsPerGoroutine = 1
 	}
 
-	runConcurrentStress(b, "Native_RuleEngine_100G", concurrency, opsPerGoroutine, func(gID, opID int) error {
-		_ = nativeEvaluateRule(gID*1000+opID, " alice ", float64(50+opID%50))
+	runConcurrentStress(b, concurrency, opsPerGoroutine, func(gID, opID int) error {
+		runtime.KeepAlive(nativeEvaluateRule(gID*1000+opID, " alice ", float64(50+opID%50)))
 		return nil
 	})
 }
@@ -231,15 +189,13 @@ func BenchmarkStress_Gig_RuleEngine_500G(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer prog.Close()
-
 	concurrency := 500
 	opsPerGoroutine := b.N / concurrency
 	if opsPerGoroutine < 1 {
 		opsPerGoroutine = 1
 	}
 
-	runConcurrentStress(b, "Gig_RuleEngine_500G", concurrency, opsPerGoroutine, func(gID, opID int) error {
+	runConcurrentStress(b, concurrency, opsPerGoroutine, func(gID, opID int) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, err := prog.RunWithContext(ctx, "EvaluateRule", gID*1000+opID, " alice ", float64(50+opID%50))
@@ -254,8 +210,8 @@ func BenchmarkStress_Native_RuleEngine_500G(b *testing.B) {
 		opsPerGoroutine = 1
 	}
 
-	runConcurrentStress(b, "Native_RuleEngine_500G", concurrency, opsPerGoroutine, func(gID, opID int) error {
-		_ = nativeEvaluateRule(gID*1000+opID, " alice ", float64(50+opID%50))
+	runConcurrentStress(b, concurrency, opsPerGoroutine, func(gID, opID int) error {
+		runtime.KeepAlive(nativeEvaluateRule(gID*1000+opID, " alice ", float64(50+opID%50)))
 		return nil
 	})
 }
@@ -269,15 +225,13 @@ func BenchmarkStress_Gig_Compute_100G(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer prog.Close()
-
 	concurrency := 100
 	opsPerGoroutine := b.N / concurrency
 	if opsPerGoroutine < 1 {
 		opsPerGoroutine = 1
 	}
 
-	runConcurrentStress(b, "Gig_Compute_100G", concurrency, opsPerGoroutine, func(gID, opID int) error {
+	runConcurrentStress(b, concurrency, opsPerGoroutine, func(gID, opID int) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, err := prog.RunWithContext(ctx, "ComputeHeavy", 100)
@@ -292,8 +246,8 @@ func BenchmarkStress_Native_Compute_100G(b *testing.B) {
 		opsPerGoroutine = 1
 	}
 
-	runConcurrentStress(b, "Native_Compute_100G", concurrency, opsPerGoroutine, func(gID, opID int) error {
-		_ = nativeComputeHeavy(100)
+	runConcurrentStress(b, concurrency, opsPerGoroutine, func(gID, opID int) error {
+		runtime.KeepAlive(nativeComputeHeavy(100))
 		return nil
 	})
 }
@@ -307,8 +261,6 @@ func TestStress_Gig_Sustained5s(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer prog.Close()
-
 	concurrencyLevels := []int{1, 10, 50, 100, 200, 500}
 
 	for _, concurrency := range concurrencyLevels {
@@ -340,9 +292,9 @@ func TestStress_Gig_Sustained5s(t *testing.T) {
 						default:
 						}
 						opStart := time.Now()
-					execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					_, err := prog.RunWithContext(execCtx, "EvaluateRule", gID*10000+i, " bob ", float64(30+i%70))
-					execCancel()
+						execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
+						_, err := prog.RunWithContext(execCtx, "EvaluateRule", gID*10000+i, " bob ", float64(30+i%70))
+						execCancel()
 						lat := time.Since(opStart).Nanoseconds()
 
 						if err != nil {

@@ -27,25 +27,25 @@ the code as you read.
 
 ## 1. Public API — `gig.go`
 
-Four entry points cover almost all usage:
+Three entry points cover almost all usage:
 
 ```go
 prog, err := gig.Build(source, opts...)         // compile
 result, err := prog.Run("Func", args...)        // run with default timeout
 result, err := prog.RunWithContext(ctx, ...)    // run with caller's ctx
-prog.Close()                                    // no-op, kept for source compat
 ```
 
 `Build` does parse → type-check → SSA build → interp setup. Options:
 
 - `WithRegistry(r)` — supply a `importer.PackageRegistry` instead of the
-  global one. Used by sandboxed/test setups; see `NewSandboxRegistry()`.
+  global one. Sandboxed/test setups can create one with
+  `importer.NewRegistry()`.
 - `WithAllowPanic()` — without this, `panic()` is rejected at compile time
   by `frontend/builder.go:checkBannedPanic`. With it, panic/recover/defer
   behave per Go.
 
-`Run` runs with a 10-second default timeout (`gig.DefaultTimeout`); cancel
-returns `gig.ErrTimeout` (= `context.DeadlineExceeded`).
+`Run` runs with a 10-second default timeout (`gig.DefaultTimeout`); timeout
+returns `context.DeadlineExceeded`.
 
 The argument-conversion path lives in `Program.run()` — caller's `any` →
 `value.Value` via `value.DefaultConverter().FromAny`, results back the
@@ -53,10 +53,10 @@ opposite way. Lower-level execution still uses `interp.Program.Call`
 internally, but the public API intentionally exposes only the `any`-based
 `Run` / `RunWithContext` wrappers.
 
-The package-level helpers (`RegisterPackage`, `GetPackageByPath`,
-`GetAllPackages`) are thin wrappers around `importer.GlobalRegistry()` —
-the global registry is what stdlib package wrappers populate from their
-`init()` functions.
+Registration and lookup helpers live in `importer`: `RegisterPackage`,
+`GetPackageByPath`, `GetPackageByName`, and `GetAllPackages` operate on
+`importer.GlobalRegistry()`, which stdlib package wrappers populate from
+their `init()` functions.
 
 ---
 
@@ -462,7 +462,7 @@ kind, name, type metadata, and optional `DirectCall` therefore come from one
 source; variable, constant, and type adapters use the same helper. When an
 expected-kind object can construct the requested adapter, that lookup returns
 without reopening the registry. If the object is missing or cannot construct
-the adapter, function, variable, and type lookups may use their legacy typed
+the adapter, function, variable, and type lookups may use their interface-based
 fallbacks; those branches preserve custom `PackageRegistry` implementations.
 The public interface is unchanged.
 

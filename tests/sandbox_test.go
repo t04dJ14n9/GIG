@@ -4,12 +4,13 @@ import (
 	"testing"
 
 	"github.com/t04dJ14n9/gig"
+	"github.com/t04dJ14n9/gig/importer"
 )
 
 // TestSandboxIsolation verifies that WithRegistry(sandbox) prevents access
 // to globally-registered packages during type-checking.
 func TestSandboxIsolation(t *testing.T) {
-	sandbox := gig.NewSandboxRegistry()
+	sandbox := importer.NewRegistry()
 	// Don't register fmt in sandbox
 
 	_, err := gig.Build(`
@@ -29,7 +30,7 @@ func Hello() string {
 
 // TestSandboxWithRegisteredPackage verifies sandbox works with explicitly registered packages.
 func TestSandboxWithRegisteredPackage(t *testing.T) {
-	sandbox := gig.NewSandboxRegistry()
+	sandbox := importer.NewRegistry()
 	// Register only the package name, not functions
 	_ = sandbox.RegisterPackage("strings", "strings")
 

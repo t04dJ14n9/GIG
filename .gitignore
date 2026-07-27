@@ -43,6 +43,7 @@ reference
 # Local agent / tooling state (never commit)
 .omc/
 .codegraph/
+.worktrees/
 cmd/gig/gig
 
 

@@ -372,50 +372,49 @@ func runTestSet(t *testing.T, set testSet) {
 	}
 
 	for fullKey, tc := range set.tests {
-		// Use fullKey for test name (includes package), tc.funcName for actual call
-		t.Run(fullKey, func(t *testing.T) {
-			if reason := knownUnsupportedCases[tc.funcName]; reason != "" {
-				t.Skip(reason)
-			}
-			if reason := knownUnrunnableCases[tc.funcName]; reason != "" {
-				t.Skip(reason)
-			}
-			startInterp := time.Now()
-			result, err := prog.Run(tc.funcName, cloneTestArgs(tc.args)...)
-			interpDuration := time.Since(startInterp)
-			if wantErr := expectedRunErrors[tc.funcName]; wantErr != "" {
-				if err == nil {
-					t.Fatalf("Run succeeded, want error containing %q", wantErr)
-				}
-				if !strings.Contains(err.Error(), wantErr) {
-					t.Fatalf("Run error = %v, want contains %q", err, wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Run error: %v", err)
-			}
-
-			if check := customResultChecks[tc.funcName]; check != nil {
-				check(t, result)
-				return
-			}
-
-			// Skip native comparison when native is nil (e.g., package main sources)
-			if tc.native != nil {
-				startNative := time.Now()
-				expected := callNative(tc.native, cloneTestArgs(tc.args))
-				nativeDuration := time.Since(startNative)
-
-				compareCorrectnessResults(t, result, expected)
-
-				ratio := float64(interpDuration) / float64(nativeDuration)
-				t.Logf("interp: %v, native(using reflection): %v, ratio: %.1fx", interpDuration, nativeDuration, ratio)
-			} else {
-				t.Logf("interp: %v (no native comparison for package main source)", interpDuration)
-			}
-		})
+		runCorrectnessCase(t, prog, fullKey, tc)
 	}
+}
+
+func runCorrectnessCase(t *testing.T, prog *gig.Program, fullKey string, tc testCase) {
+	t.Helper()
+	t.Run(fullKey, func(t *testing.T) {
+		if reason := knownUnsupportedCases[tc.funcName]; reason != "" {
+			t.Skip(reason)
+		}
+		if reason := knownUnrunnableCases[tc.funcName]; reason != "" {
+			t.Skip(reason)
+		}
+		startInterp := time.Now()
+		result, err := prog.Run(tc.funcName, cloneTestArgs(tc.args)...)
+		interpDuration := time.Since(startInterp)
+		if wantErr := expectedRunErrors[tc.funcName]; wantErr != "" {
+			if err == nil {
+				t.Fatalf("Run succeeded, want error containing %q", wantErr)
+			}
+			if !strings.Contains(err.Error(), wantErr) {
+				t.Fatalf("Run error = %v, want contains %q", err, wantErr)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("Run error: %v", err)
+		}
+		if check := customResultChecks[tc.funcName]; check != nil {
+			check(t, result)
+			return
+		}
+		if tc.native != nil {
+			startNative := time.Now()
+			expected := callNative(tc.native, cloneTestArgs(tc.args))
+			nativeDuration := time.Since(startNative)
+			compareCorrectnessResults(t, result, expected)
+			ratio := float64(interpDuration) / float64(nativeDuration)
+			t.Logf("interp: %v, native(using reflection): %v, ratio: %.1fx", interpDuration, nativeDuration, ratio)
+		} else {
+			t.Logf("interp: %v (no native comparison for package main source)", interpDuration)
+		}
+	})
 }
 
 // ============================================================================
@@ -1184,14 +1183,20 @@ var panicRecoverTests = map[string]testCase{
 	"NamedReturnDeferModify":  {panicRecoverSrc, "NamedReturnDeferModify", nil, panic_recover.NamedReturnDeferModify},
 
 	// Complex panic/recover scenarios
-	"PanicInLoop":                    {panicRecoverSrc, "PanicInLoop", nil, panic_recover.PanicInLoop},
-	"PanicInClosure":                 {panicRecoverSrc, "PanicInClosure", nil, panic_recover.PanicInClosure},
-	"MultiplePanicSameDefer":         {panicRecoverSrc, "MultiplePanicSameDefer", nil, panic_recover.MultiplePanicSameDefer},
-	"PanicInRecursiveFunction":       {panicRecoverSrc, "PanicInRecursiveFunction", nil, panic_recover.PanicInRecursiveFunction},
-	"DeferClosureCapturePanic":       {panicRecoverSrc, "DeferClosureCapturePanic", nil, panic_recover.DeferClosureCapturePanic},
-	"PanicInDeferWithRecoverInDefer": {panicRecoverSrc, "PanicInDeferWithRecoverInDefer", nil, panic_recover.PanicInDeferWithRecoverInDefer},
-	"RecoverOnlyInDefer":             {panicRecoverSrc, "RecoverOnlyInDefer", nil, panic_recover.RecoverOnlyInDefer},
-	"RecoverInGoroutine":             {panicRecoverSrc, "RecoverInGoroutine", nil, panic_recover.RecoverInGoroutine},
+	"PanicInLoop":                      {panicRecoverSrc, "PanicInLoop", nil, panic_recover.PanicInLoop},
+	"PanicInClosure":                   {panicRecoverSrc, "PanicInClosure", nil, panic_recover.PanicInClosure},
+	"MultiplePanicSameDefer":           {panicRecoverSrc, "MultiplePanicSameDefer", nil, panic_recover.MultiplePanicSameDefer},
+	"PanicInRecursiveFunction":         {panicRecoverSrc, "PanicInRecursiveFunction", nil, panic_recover.PanicInRecursiveFunction},
+	"DeferClosureCapturePanic":         {panicRecoverSrc, "DeferClosureCapturePanic", nil, panic_recover.DeferClosureCapturePanic},
+	"PanicInDeferWithRecoverInDefer":   {panicRecoverSrc, "PanicInDeferWithRecoverInDefer", nil, panic_recover.PanicInDeferWithRecoverInDefer},
+	"RecoverWithDirectInterfaceMethod": {panicRecoverSrc, "RecoverWithDirectInterfaceMethod", nil, panic_recover.RecoverWithDirectInterfaceMethod},
+	"RecoverWithConcreteMethodValue":   {panicRecoverSrc, "RecoverWithConcreteMethodValue", nil, panic_recover.RecoverWithConcreteMethodValue},
+	"RecoverWithInterfaceMethodValue":  {panicRecoverSrc, "RecoverWithInterfaceMethodValue", nil, panic_recover.RecoverWithInterfaceMethodValue},
+	"RecoverWithMethodExpression":      {panicRecoverSrc, "RecoverWithMethodExpression", nil, panic_recover.RecoverWithMethodExpression},
+	"RecoverWithPromotedMethod":        {panicRecoverSrc, "RecoverWithPromotedMethod", nil, panic_recover.RecoverWithPromotedMethod},
+	"RecoverHelperCannotRecover":       {panicRecoverSrc, "RecoverHelperCannotRecover", nil, panic_recover.RecoverHelperCannotRecover},
+	"RecoverOnlyInDefer":               {panicRecoverSrc, "RecoverOnlyInDefer", nil, panic_recover.RecoverOnlyInDefer},
+	"RecoverInGoroutine":               {panicRecoverSrc, "RecoverInGoroutine", nil, panic_recover.RecoverInGoroutine},
 
 	// Edge cases
 	"EmptyDeferPanic":              {panicRecoverSrc, "EmptyDeferPanic", nil, panic_recover.EmptyDeferPanic},

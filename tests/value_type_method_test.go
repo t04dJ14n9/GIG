@@ -31,8 +31,6 @@ func IncrementAndGet() int {
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
-	defer prog.Close()
-
 	result, err := prog.Run("IncrementAndGet")
 	if err != nil {
 		t.Fatalf("IncrementAndGet error: %v", err)
@@ -67,8 +65,6 @@ func IncrementAndGet() int {
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
-	defer prog.Close()
-
 	for i := 1; i <= 10; i++ {
 		result, err := prog.Run("IncrementAndGet")
 		if err != nil {
@@ -114,8 +110,6 @@ func GetCounter() int {
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
-	defer prog.Close()
-
 	const numGoroutines = 50
 	const callsPerGoroutine = 20
 	totalCalls := numGoroutines * callsPerGoroutine
@@ -169,8 +163,6 @@ func StoreAndLoad() int {
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
-	defer prog.Close()
-
 	result, err := prog.Run("StoreAndLoad")
 	if err != nil {
 		t.Fatalf("StoreAndLoad error: %v", err)

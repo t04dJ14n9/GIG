@@ -12,8 +12,9 @@ source ──► go/parser ──► go/types ──► go/ssa ──► interp.
 ```
 
 The interpreter is a tree-walking SSA evaluator — no custom IR, no bytecode,
-no JIT. Every value flows through `reflect.Value` at host boundaries; inside
-the interpreter most primitives are unboxed in a 32-byte tagged union.
+no JIT. Generic host boundaries use `reflect.Value`, while generated direct
+wrappers stay in interpreter-side values; inside the interpreter most
+primitives are unboxed in a 32-byte tagged union.
 
 The only external dependency is `golang.org/x/tools` for SSA construction.
 Everything else (parsing, type-checking) is in the Go stdlib.
@@ -26,25 +27,25 @@ the code as you read.
 
 ## 1. Public API — `gig.go`
 
-Four entry points cover almost all usage:
+Three entry points cover almost all usage:
 
 ```go
 prog, err := gig.Build(source, opts...)         // compile
 result, err := prog.Run("Func", args...)        // run with default timeout
 result, err := prog.RunWithContext(ctx, ...)    // run with caller's ctx
-prog.Close()                                    // no-op, kept for source compat
 ```
 
 `Build` does parse → type-check → SSA build → interp setup. Options:
 
 - `WithRegistry(r)` — supply a `importer.PackageRegistry` instead of the
-  global one. Used by sandboxed/test setups; see `NewSandboxRegistry()`.
+  global one. Sandboxed/test setups can create one with
+  `importer.NewRegistry()`.
 - `WithAllowPanic()` — without this, `panic()` is rejected at compile time
   by `frontend/builder.go:checkBannedPanic`. With it, panic/recover/defer
   behave per Go.
 
-`Run` runs with a 10-second default timeout (`gig.DefaultTimeout`); cancel
-returns `gig.ErrTimeout` (= `context.DeadlineExceeded`).
+`Run` runs with a 10-second default timeout (`gig.DefaultTimeout`); timeout
+returns `context.DeadlineExceeded`.
 
 The argument-conversion path lives in `Program.run()` — caller's `any` →
 `value.Value` via `value.DefaultConverter().FromAny`, results back the
@@ -52,10 +53,10 @@ opposite way. Lower-level execution still uses `interp.Program.Call`
 internally, but the public API intentionally exposes only the `any`-based
 `Run` / `RunWithContext` wrappers.
 
-The package-level helpers (`RegisterPackage`, `GetPackageByPath`,
-`GetAllPackages`) are thin wrappers around `importer.GlobalRegistry()` —
-the global registry is what stdlib package wrappers populate from their
-`init()` functions.
+Registration and lookup helpers live in `importer`: `RegisterPackage`,
+`GetPackageByPath`, `GetPackageByName`, and `GetAllPackages` operate on
+`importer.GlobalRegistry()`, which stdlib package wrappers populate from
+their `init()` functions.
 
 ---
 
@@ -142,8 +143,8 @@ Primitives (`bool`, `int*`, `uint*`, `float*`, `complex*`, `nil`) are unboxed
 inline — `num` carries the bits and `obj` stays nil. Strings, complex
 numbers, and every composite/reflect-typed value go through `obj`. Mutability
 is intentionally absent: a `Value` is immutable once constructed; "mutating"
-a variable means installing a new `Value` into the surrounding `Cell` (which
-is the interpreter's storage layer — see §5).
+a variable means installing a new `Value` into its frame-local or package-global
+storage slot (see §5).
 
 The `size` field records the original Go width so `Interface()` can return
 `int8(5)` rather than `int(5)` when the value was built from `int8(5)`.
@@ -194,15 +195,17 @@ which calls a method on the named type — still resolves.
 
 ```go
 type program struct {
-    ssaPkg    *ssa.Package
-    env       host.Environment
-    converter value.Converter
-    resolver  *typeResolver
-    globals   map[*ssa.Global]*Cell
-    maxDepth  int
-    layouts   sync.Map
-    framePools sync.Map
-    panicFrame *frame
+    ssaPkg      *ssa.Package
+    fset        any
+    env         host.Environment
+    converter   value.Converter
+    resolver    *typeResolver
+    globalsMu   sync.RWMutex
+    globals     map[*ssa.Global]value.Value
+    maxDepth    int
+    hostFuncs   sync.Map
+    hostMethods sync.Map
+    layouts     sync.Map // map[*ssa.Function]*frameLayout
 }
 ```
 
@@ -210,42 +213,73 @@ type program struct {
 locates the function, recovers from any propagating panic (turning it into an
 error), and hands off to `callSSA`.
 
-`callSSA` (`frame.go`) is the function-call lifecycle:
+`callSSA` is the ordinary slice-returning entry point. It delegates to
+`callSSAInto` (`frame.go`), which is the function-call lifecycle and can also
+accept a caller-provided, non-returned sink for exactly one result:
 
 1. Cap recursion at `maxDepth` (1024).
 2. Reject body-less functions (those go through `callHostFunc` instead).
-3. Build or reuse the per-call `frame`: SSA function pointer,
-   current/previous block, slot array, fallback `cells` map
-   (`ssa.Value → *Cell`), free-variable cells for closures.
+3. Fetch the cached `frameLayout`, then build the per-call `frame`: SSA
+   function pointer, current/previous block, a pointer to the layout, and one
+   compact `values []value.Value` array.
 4. Bind parameters and free variables.
-5. Pre-allocate `Cell`s for every `*ssa.Local` so `Store`/`UnOp(MUL)` can
-   address them.
+5. Initialize each local's already-existing value slot with a fresh
+   addressable reflect value so `Store`/`UnOp(MUL)` can address it.
 6. Install the panic handler (see §8).
-7. `runFrame(caller, fr, depth)` — the dispatch loop.
+7. `runFrame(caller, fr, depth, singleResult)` — the dispatch loop.
 
-`runFrame` walks blocks. For each block: resolve all Phi nodes from a
-**snapshot of the cell map** (so simultaneous Phis don't observe each
-other's updates), then iterate the remaining instructions. Each handler
-returns a `continuation`:
+`frameLayout` is compiled once per `*ssa.Function` and cached in
+`program.layouts`. Its `index map[ssa.Value]int` is the only SSA-identity-to-
+offset mapping, shared immutably by every invocation of that function; it also
+records deterministic `values []ssa.Value` metadata and one immutable
+`blockPlan` per basic block. Every invocation owns exactly one fresh compact
+`[]value.Value`. Frames with at most eight indexed values keep a
+`[8]value.Value` array inline with the frame allocation; larger frames allocate
+one exactly sized ordinary slice. There is no per-invocation
+SSA-value-to-frame-slot lookup map, slot/fallback dual store, typed dirty-cache
+materialisation protocol, or frame pool. A frame does retain the planned
+`iters` side table for `Range`/`Next` iterator control state; that table does
+not map runtime SSA values to storage slots.
+
+Package globals likewise store values directly in
+`map[*ssa.Global]value.Value`, guarded by `globalsMu`. Closures keep captured
+bindings as `[]value.Value`: `runMakeClosure` snapshots the current binding
+value, so scalar captures are snapshots while captured pointer/address values
+continue to refer to shared addressable storage. Neither globals nor closure
+bindings add a wrapper object around a runtime value.
+
+`runFrame` walks exactly one plan per block. At block entry, `runBlockPhis`
+selects the predecessor once, stages every Phi source in a temporary
+`[]value.Value` (with an eight-value stack buffer), then commits every
+destination. This preserves simultaneous Phi semantics without any
+type-specific Phi path. It then walks the block's single ordered operation
+list. Each operation returns a `continuation`:
 
 - `contNext` — advance to the next instruction.
 - `contJump` — `fr.block` was changed by the handler (`If`, `Jump`); restart
   the outer loop.
 - `contReturn` — function is returning with the supplied result tuple.
 
-To keep the readable SSA interpreter close to Yaegi performance,
-`frameLayout` precomputes two runtime plans on first use:
+The operation list mixes ordinary `planGeneric` entries with a small set of
+optional optimized kinds in the same loop: plain `int` arithmetic and
+comparisons, plain `bool` branches, jumps, and safe adjacent plain-`[]int`
+`IndexAddr → load/store` pairs. Generic entries delegate to `visitInstr`.
+Planned indexed pairs require the `IndexAddr` to have only the adjacent
+consumer (apart from debug refs); named slice types stay on the generic path.
+If the runtime representation is not the native `[]int` shape, the planned
+entry executes the original two instructions. Escaping or otherwise unsafe
+addresses are materialized normally; there is no per-frame address side
+channel such as the former `addrRefs` state.
 
-- `slotIndex`: most SSA values map to `[]Cell` slots; `ssa.Alloc` remains in
-  the fallback map so closure/address-taking semantics are not broken by slot
-  reuse.
-- typed fast plans: plain `int`/`bool` Phi, BinOp, If, plus common `[]int`
-  load/store patterns run directly from slot/const operands and bypass
-  `readValue` map lookup.
-
-Frame pooling is enabled only for functions that do not create more closures
-inside their body and do not have complex local addresses. Simple closure
-bodies can reuse frames; captured cells still come from the closure object.
+The final compact-frame `Fib25` seven-sample medians on Apple M3 Pro / Go
+1.26.3 are `51,841,788 ns/op`, `100,999,547 B/op`, and `242,793 allocs/op`.
+They pass all three design gates. All 17 representative workloads remain
+below their exact `3.0x` ceilings; the tightest uses `0.495004x` of its limit.
+The current `ExtCallReflect`,
+`ExtCallMethod`, and `ExtCallMixed` workloads use registered `DirectMethod`
+wrappers, so those measurements cover the unified host-dispatch path rather
+than a raw-reflection-only method fallback. Full data is in
+`PERFORMANCE_OPTIMIZATION_2026-06_CN.md`.
 
 ### Instruction handlers — `ops.go`
 
@@ -265,23 +299,54 @@ roughly grouped:
 | Concurrency | `Go`, `Send`, `Select` | goroutine.go |
 | Type | `TypeAssert` | type_assert.go |
 
-Phi nodes are resolved at block entry by `runBlockPhis`; the handler in
-`visitInstr` is a no-op for any Phi reached defensively.
+Phi nodes are compiled as the leading group in each `blockPlan` and resolved
+at block entry by `runBlockPhis`; the handler in `visitInstr` is a no-op for
+any Phi reached defensively. Optimized operation kinds live in `plan.go` and
+use the same canonical value array as generic instruction handlers.
 
-### Cells, addressability, and the reflect bridge
+### Call classification and caller-owned storage
+
+`runCall` is the single call classifier. It selects focused helpers for an
+interface invoke, a builtin, a body-less host function, a direct interpreted
+SSA function, or an indirect interpreted/reflect function value. Helpers reuse
+`readValue`/`readValuesInto`. Call shapes that need result packing converge on
+`finishCall`: it calls `packResults` to turn the 0/1/N tuple into one `Value`,
+then writes that value to the instruction's frame slot. Builtin and direct
+single-result paths write their already-singular value directly. There is no
+second call dispatcher.
+
+`runDirectInterpretedCall` owns the only specialized scratch path. Zero
+arguments use nil, one argument uses a caller-owned local `[1]value.Value`, and
+multiple arguments use the ordinary exactly sized slice fallback. For a
+one-result callee it passes the address of a caller-owned local `value.Value`
+to `callSSAInto`. The same non-returned sink is threaded through `runFrame` and
+the return/recover paths; they write through it and return no aliasing result
+slice. The direct helper then writes the local value to the caller's instruction
+slot. Zero or multiple results use the ordinary slice-returning path and
+`finishCall`/`packResults`. The sink is never stored on the frame, returned, or
+retained after the helper consumes it.
+
+Escape analysis is worth stating precisely: the one-argument array and the
+one-result `value.Value` both remain stack-resident, and every `singleResult`
+parameter is reported as non-escaping. Multi-value calls and the host,
+interface, indirect, and reflect fallbacks continue to use ordinary slices.
+No argument/result pool or frame-owned scratch lifecycle exists.
+
+### Value slots, addressability, and the reflect bridge
 
 The storage model in `composite.go` is the single trickiest thing about the
 implementation:
 
-- A *scalar local* is just a `Value` in the cell. Reads return the value;
+- A *scalar local* is just a `Value` in its indexed frame slot. Reads return the value;
   writes install a new one.
 - A *composite local* (struct, array, ...) lives as an addressable
   `reflect.Value` (built by `reflect.New(rt).Elem()` and stored as
   `KindReflect`). `Field` / `IndexAddr` / `Slice` operate on these reflect
   values directly — that's how field-of-struct gets addressability.
-- A *pointer* coming from `Alloc` carries the cell's address — `addr.Addr()`
-  — so `UnOp(MUL)` and downstream `Store` operations dereference and mutate
-  the original cell.
+- A *pointer* coming from `Alloc` carries an addressable reflected pointer —
+  `addr.Addr()` — so `UnOp(MUL)` and downstream `Store` operations dereference
+  and mutate the shared pointee even though the pointer `Value` itself sits in
+  an ordinary frame slot.
 
 The pivotal helper is `reflectOf(v Value, hint reflect.Type)`:
 
@@ -378,7 +443,7 @@ pkg.AddType("ByteOrder", reflect.TypeOf((*binary.ByteOrder)(nil)).Elem(), "")
 `func([]value.Value) ([]value.Value, error)` DirectCall wrapper for hot paths. Calls
 without a wrapper dispatch via `reflect.Call` at runtime. `AddVariable`
 takes a pointer so reads load through `UnOp(MUL)` and writes can `Set` the
-slot. `AddType` registers a `reflect.Type` for type-checker resolution.
+registered storage. `AddType` registers a `reflect.Type` for type-checker resolution.
 Selected methods can register `AddMethodDirectCall(type, method, wrapper)`;
 the wrapper receives the receiver separately from normal args.
 
@@ -391,6 +456,16 @@ the wrapper receives the receiver separately from normal args.
 - `LookupConst`, `LookupType`, `LookupReflectType` — type resolution side.
 - `AutoImport(name)` — the auto-import frontend hook.
 
+For ordinary `importer.Registry` packages, `registryBridge.lookupObject`
+resolves the package and its typed `ExternalObject` once. Function value,
+kind, name, type metadata, and optional `DirectCall` therefore come from one
+source; variable, constant, and type adapters use the same helper. When an
+expected-kind object can construct the requested adapter, that lookup returns
+without reopening the registry. If the object is missing or cannot construct
+the adapter, function, variable, and type lookups may use their interface-based
+fallbacks; those branches preserve custom `PackageRegistry` implementations.
+The public interface is unchanged.
+
 ### Function dispatch
 
 `callHostFunc` (in `host_call.go`) is what runs when SSA emits a `Call` to a
@@ -399,18 +474,23 @@ body-less function:
 1. Compute the package path from `fn.Pkg.Pkg.Path()`.
 2. If `fn.Signature.Recv() != nil`, it's a host method — route to
    `invokeMethodOn(args[0], fn.Name(), args[1:])`.
-3. Otherwise look up `LookupFunc(pkg, fn.Name())`.
-   If it implements `host.DirectFunction`, call the wrapper and store the
-   single returned value directly.
-4. If there is no direct wrapper, call `Function.Call`.
+3. Otherwise resolve/cache `LookupFunc(pkg, fn.Name())`, then pass the adapter
+   to `callResolvedHostFunc`.
+4. `callResolvedHostFunc` tries `host.DirectFunction.CallDirect` once. A
+   handled result or error returns immediately; a declined direct call uses
+   the one generic `Function.Call` path.
 5. If lookup fails, fall through to `invokeMethodOn` once — covers a few
    stdlib packages whose methods aren't registered as free functions.
 
 The `host.Function` returned is
 `reflectFunc{fn: reflect.ValueOf(rawFn), directCall: wrapper}`. Its
-`CallDirect` uses the wrapper when present. Its slower `Call` builds
+`CallDirect` uses the wrapper when present. Its generic `Call` builds
 reflect-typed args via `Converter.ToReflect` and dispatches through
 `reflect.Value.Call` (or `CallSlice` for variadic with a pre-packed slice).
+For a body-less SSA call, `runCall` reads its arguments once, invokes
+`callHostFunc` once, then calls `finishCall` once; `finishCall` uses
+`packResults` for 0/1/N packing and performs the frame-slot writeback. Direct
+selection no longer has a parallel caller-side path.
 
 Variadic handling has three shapes (see `reflectFunc.Call` in
 `registry_bridge.go`):
@@ -428,25 +508,39 @@ Variadic handling has three shapes (see `reflectFunc.Call` in
 functions, and `defer` records that captured an interface-method receiver
 (see §8).
 
+Registered method wrappers do **not** come from `ExternalObject`.
+`lookupHostMethod` first checks the `(reflect.Type, method)` cache, derives
+value/pointer type keys on a miss, and calls `Environment.LookupMethod`.
+`registryBridge.LookupMethod` then asks `PackageRegistry.LookupMethodDirectCall`
+for the wrapper; a successful `host.Method` is cached before
+`callResolvedHostMethod` invokes it.
+
 Steps:
 
 1. **Unwrap interface boxes.** If the receiver is `KindInterface`,
    `dynRecv = box.Elem()` so the rest of the path sees the dynamic
    concrete value.
-2. **Try registered host DirectMethod wrappers first.** The lookup is cached
-   by `(reflect.Type, method)` so repeated host method calls do not rebuild
-   package/type keys or bridge objects.
+2. **Resolve a registered host method adapter first.** The lookup is cached
+   by `(reflect.Type, method)` so repeated calls do not rebuild package/type
+   keys or bridge objects. `callResolvedHostMethod` then tries
+   `DirectMethod.CallDirect`; handled/error stops there, while a decline uses
+   the adapter's one ordinary `Method.Call` path.
 3. **Try interpreted methods** — `lookupInterpretedMethod` scans
    `ssautil.AllFunctions(prog)` for an `*ssa.Function` in the source
    package whose name matches and whose receiver matches via
    `receiverMatches`.
 4. If found: `adjustReceiverShape` derefs `*T → T` or addresses `T → *T` to
    match the SSA-declared receiver type. (Go's spec auto-(de)refs; the
-   interpreter has to do the same so cell types and reflect.Set targets
+   interpreter has to do the same so runtime values and reflect.Set targets
    agree.) Then `callSSA` runs the body.
 5. If no interpreted match: build a reflect.Value for the dynamic receiver,
    try `MethodByName`, then `Addr().MethodByName`, then `Elem().MethodByName`.
    Pack args via `Converter.ToReflect`, call, unwrap results.
+
+Interface invokes follow the same rule in `runCall`: read receiver/arguments
+once, invoke `invokeMethodOn` once, then call `finishCall` once for packing and
+frame-slot writeback. There are no separate direct-function or direct-method
+entry points to keep in sync.
 
 `receiverMatches` accepts the runtime type matching the wanted type, plus
 two flexibilities:
@@ -526,7 +620,7 @@ Two bits worth flagging:
   surfaces the panic as an error. Intermediate frames re-panic so a chained
   `recover()` further up the call stack can still consume.
 - **Recover + named return.** When `recover()` succeeds, we jump into
-  `fn.Recover` (the SSA-emitted recover block) so the named-return cells —
+  `fn.Recover` (the SSA-emitted recover block) so the named-return slots —
   which any deferred function may have mutated — are read from there into
   `results`. Without this, a recover inside a deferred mutator would not
   surface its update to the caller.
@@ -633,7 +727,7 @@ in `cli-guide.md`.
 `context.WithTimeout`. `RunWithContext(ctx, ...)` uses the supplied context
 verbatim. The frontend pipeline checks `ctx.Err()` between build phases.
 The SSA runtime also polls the context at function entry and then roughly
-every 1024 executed SSA/fast instructions, so tight loops return
+every 1024 executed planned operations, so tight loops return
 `context.DeadlineExceeded` / `context.Canceled` without waiting for the
 outer goroutine to be killed. A blocking host `reflect.Call` cannot be
 preempted from inside Gig; cancellation is observed before or after that
@@ -683,11 +777,12 @@ internal/frontend/builder.go            Compile pipeline
 internal/frontend/host_iface_check.go   G_iface_ban check
 value/value.go                          Tagged-union Value, Converter
 internal/interp/engine.go               program, typeResolver, named-type tag
-internal/interp/frame.go                callSSA, runFrame, panic-recover
-internal/interp/ops.go                  Instruction dispatch
+internal/interp/frame.go                cached layout, compact value frames, callSSAInto, runFrame, panic-recover
+internal/interp/plan.go                 cached layout, Phi group, ordered block operations
+internal/interp/ops.go                  generic instruction and call dispatch
 internal/interp/arith.go                BinOp, UnOp, scalar conversion
 internal/interp/composite.go            Field, Slice, Map, Range, MakeInterface
-internal/interp/closure.go              MakeClosure via reflect.MakeFunc
+internal/interp/closure.go              interpretedFunc; reflect.MakeFunc only for ReflectValue host fallback
 internal/interp/defer_panic.go          Defer records, RunDefers, recover
 internal/interp/goroutine.go            Go, Send, Select
 internal/interp/type_assert.go          TypeAssert, Panic

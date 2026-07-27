@@ -9,6 +9,9 @@ on:
   pull_request:
     branches: ["main"]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build and Test
@@ -76,6 +79,41 @@ jobs:
       - name: Test
         run: go test -v -race ./...
 
+  modules:
+    name: ${{ matrix.module }} (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ["benchmarks", "examples/simple", "examples/custom"]
+        go: ["1.23.x", "1.26.x"]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Test benchmark module
+        if: matrix.module == 'benchmarks'
+        run: go test -v -run '^TestCrossInterpreterComparison$' ./...
+
+      - name: Test example module
+        if: matrix.module != 'benchmarks'
+        run: go test -v ./...
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -128,4 +166,4 @@ jobs:
 
       - name: Run Gosec Security Scanner (CLI)
         working-directory: cmd/gig
-        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -exclude=G115 -exclude-generated -exclude-dir=gentool ./...
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -exclude=G115 -exclude-generated ./...

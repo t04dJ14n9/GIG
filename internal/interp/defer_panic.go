@@ -26,11 +26,10 @@ import (
 type deferRecord struct {
 	fn   value.Value   // function value (possibly a closure)
 	args []value.Value // snapshot of args
-	pos  string        // for diagnostics
 	// For builtins (close, recover, etc) we keep the SSA op around.
 	builtin *ssa.Builtin
-	// fnSSA: when the call target is *ssa.Function we can call it
-	// directly via callSSA rather than reflect.Value.Call.
+	// fnSSA: static function targets use the canonical body/host dispatcher
+	// rather than reflect.Value.Call.
 	fnSSA *ssa.Function
 	// invokeMethod / invokeRecv: when the deferred call is an interface
 	// method invocation (`defer iface.Method(args)`), SSA models it as
@@ -40,15 +39,11 @@ type deferRecord struct {
 	invokeMethod string
 }
 
-func (p *program) runDefer(fr *frame, instr *ssa.Defer) (continuation, []value.Value, error) {
+func (p *program) runDefer(fr *frame, instr *ssa.Defer) error {
 	common := instr.Common()
-	args := make([]value.Value, len(common.Args))
-	for i, a := range common.Args {
-		v, err := p.readValue(fr, a)
-		if err != nil {
-			return contNext, nil, err
-		}
-		args[i] = v
+	args, err := p.readValuesInto(fr, common.Args, nil)
+	if err != nil {
+		return err
 	}
 	rec := &deferRecord{args: args}
 	// `defer recv.Method(args)` is modelled by SSA as an Invoke whose
@@ -58,12 +53,12 @@ func (p *program) runDefer(fr *frame, instr *ssa.Defer) (continuation, []value.V
 	if common.IsInvoke() {
 		recv, err := p.readValue(fr, common.Value)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		rec.invokeRecv = recv
 		rec.invokeMethod = common.Method.Name()
 		fr.defers = append(fr.defers, rec)
-		return contNext, nil, nil
+		return nil
 	}
 	switch tgt := common.Value.(type) {
 	case *ssa.Function:
@@ -73,28 +68,30 @@ func (p *program) runDefer(fr *frame, instr *ssa.Defer) (continuation, []value.V
 	default:
 		v, err := p.readValue(fr, common.Value)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		rec.fn = v
 	}
 	fr.defers = append(fr.defers, rec)
-	return contNext, nil, nil
+	return nil
 }
 
-func (p *program) runRunDefers(fr *frame, _ *ssa.RunDefers) (continuation, []value.Value, error) {
-	if err := p.executeDefers(fr); err != nil {
-		return contNext, nil, err
+func (p *program) runRunDefers(fr *frame, _ *ssa.RunDefers, depth int) error {
+	if err := p.executeDefers(fr, depth); err != nil {
+		return err
 	}
-	return contNext, nil, nil
+	return nil
 }
 
 // executeDefers walks the deferred records in LIFO order and runs each.
 // A panic inside a defer body is captured in fr.panicVal; subsequent
-// recover() in this frame will retrieve it.
-func (p *program) executeDefers(fr *frame) error {
+// recover() in this frame will retrieve it. depth is fr's own call
+// depth; each fired defer body runs one level deeper so deferred
+// recursion still trips the max-depth guard.
+func (p *program) executeDefers(fr *frame, depth int) error {
 	for i := len(fr.defers) - 1; i >= 0; i-- {
 		rec := fr.defers[i]
-		if err := p.runDeferRec(fr, rec); err != nil {
+		if err := p.runDeferRec(fr, rec, depth); err != nil {
 			return err
 		}
 	}
@@ -102,7 +99,7 @@ func (p *program) executeDefers(fr *frame) error {
 	return nil
 }
 
-func (p *program) runDeferRec(fr *frame, rec *deferRecord) error {
+func (p *program) runDeferRec(fr *frame, rec *deferRecord, depth int) error {
 	defer func() {
 		if re := recover(); re != nil {
 			fr.panicking = true
@@ -111,21 +108,14 @@ func (p *program) runDeferRec(fr *frame, rec *deferRecord) error {
 	}()
 	switch {
 	case rec.invokeMethod != "":
-		_, err := p.invokeMethodOn(fr.ctx, rec.invokeRecv, rec.invokeMethod, rec.args)
+		_, err := p.invokeMethodOn(fr.ctx, fr, rec.invokeRecv, rec.invokeMethod, rec.args, depth+1)
 		return err
 	case rec.fnSSA != nil:
-		// A deferred SSA function may be either an interpreted body or
-		// a host method (e.g. `defer mu.Unlock()`). The latter has no
-		// SSA blocks; route those through the host bridge.
-		if len(rec.fnSSA.Blocks) == 0 {
-			_, err := p.callHostFunc(fr.ctx, rec.fnSSA, rec.args)
-			return err
-		}
-		_, err := p.callSSA(fr.ctx, fr, rec.fnSSA, rec.args, nil, 0)
+		_, err := p.callStaticFunction(fr.ctx, fr, rec.fnSSA, rec.args, depth+1)
 		return err
 	case rec.builtin != nil:
 		// Builtins as defer targets are rare (close, print).
-		_, err := p.callBuiltinDirect(fr, rec.builtin, rec.args)
+		_, err := p.executeBuiltin(fr, rec.builtin, rec.args)
 		return err
 	}
 	// Function-value. If it wraps an interpreted body, dispatch through
@@ -135,7 +125,7 @@ func (p *program) runDeferRec(fr *frame, rec *deferRecord) error {
 	// link. Genuinely-external func values still take the reflect path.
 	if fn, ok := rec.fn.Func(); ok {
 		if ifn, ok := fn.(*interpretedFunc); ok && len(ifn.fn.Blocks) > 0 {
-			_, err := p.callSSA(fr.ctx, fr, ifn.fn, rec.args, ifn.freeVars, 0)
+			_, err := p.callSSA(fr.ctx, fr, ifn.fn, rec.args, ifn.freeVars, depth+1)
 			return err
 		}
 	}
@@ -146,49 +136,11 @@ func (p *program) runDeferRec(fr *frame, rec *deferRecord) error {
 	if rv.Kind() != reflect.Func {
 		return fmt.Errorf("interp: defer target not callable")
 	}
-	rargs := make([]reflect.Value, len(rec.args))
-	for i, a := range rec.args {
-		rargs[i], err = p.converter.ToReflect(a, rv.Type().In(i))
-		if err != nil {
-			return err
-		}
+	args := bindHostCallbackDepth(fr.ctx, rec.args, depth+1)
+	rargs, err := p.reflectArgs(rv.Type(), args)
+	if err != nil {
+		return err
 	}
 	rv.Call(rargs)
 	return nil
-}
-
-// callBuiltinDirect lets defer trampoline through the builtin path
-// using already-resolved args.
-func (p *program) callBuiltinDirect(fr *frame, b *ssa.Builtin, args []value.Value) (value.Value, error) {
-	// Mirror callBuiltin without the SSA arg readout step.
-	switch b.Name() {
-	case "print", "println":
-		return value.MakeNil(), nil
-	case "close":
-		rv, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		rv.Close()
-		return value.MakeNil(), nil
-	case "panic":
-		if len(args) > 0 {
-			panic(args[0].Interface())
-		}
-		panic("panic with no argument")
-	case "recover":
-		if fr != nil && fr.panicking {
-			v := fr.panicVal
-			fr.panicking = false
-			fr.panicVal = nil
-			c := value.DefaultConverter()
-			vv, err := c.FromAny(v)
-			if err != nil {
-				return value.Value{}, err
-			}
-			return vv, nil
-		}
-		return value.MakeNil(), nil
-	}
-	return value.Value{}, fmt.Errorf("interp: defer of builtin %s not supported", b.Name())
 }

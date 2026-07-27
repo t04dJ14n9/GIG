@@ -7,11 +7,8 @@ import (
 	"math/big"
 	"os"
 	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/t04dJ14n9/gig"
 	_ "github.com/t04dJ14n9/gig/stdlib/packages"
@@ -765,11 +762,6 @@ func TestBenchmarkSummary(t *testing.T) {
 	t.Log("  • Third-party benchmarks use Go stdlib as proxy for external libraries")
 	t.Log("  • Complex syntax tests cover interfaces, methods, type assertions,")
 	t.Log("    panic/recover, defer, select, and composite literals")
-
-	// Suppress unused warnings
-	_ = strconv.Itoa
-	_ = sort.Ints
-	_ = time.Now()
 }
 
 // categorize returns the category for a benchmark name
@@ -796,7 +788,7 @@ func categorize(name string) string {
 		strings.Contains(name, "Panic"), strings.Contains(name, "Select"),
 		strings.Contains(name, "Composite"):
 		return "Complex Syntax"
-	case strings.Contains(name, "Sort"), strings.Contains(name, "Builder"),
+	case strings.Contains(name, "Builder"),
 		strings.Contains(name, "Math"), strings.Contains(name, "Json"):
 		return "Third-party"
 	default:

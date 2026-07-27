@@ -18,12 +18,54 @@ import (
 	"github.com/t04dJ14n9/gig/value"
 )
 
+type methodNotFoundError struct {
+	method   string
+	receiver reflect.Type
+}
+
+type methodDispatchResult struct {
+	results      []value.Value
+	receiverType reflect.Type
+	found        bool
+}
+
+func (e *methodNotFoundError) Error() string {
+	return fmt.Sprintf("interp: method %s not found on %s", e.method, e.receiver)
+}
+
+func callResolvedHostFunc(fn host.Function, args []value.Value) ([]value.Value, error) {
+	if direct, ok := fn.(host.DirectFunction); ok {
+		results, handled, err := direct.CallDirect(args)
+		if err != nil || handled {
+			return results, err
+		}
+	}
+	return fn.Call(args)
+}
+
+func callResolvedHostMethod(method host.Method, recv value.Value, args []value.Value) ([]value.Value, error) {
+	if direct, ok := method.(host.DirectMethod); ok {
+		result, handled, err := direct.CallDirect(recv, args)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			return []value.Value{result}, nil
+		}
+	}
+	return method.Call(recv, args)
+}
+
 // callHostFunc dispatches a body-less *ssa.Function to the host
 // environment. The function name and package path come from the SSA
 // node; the host bridge resolves them to a host.Function. Generated
 // wrappers may run through host.DirectFunction; all other functions
 // fall back to reflect-backed host.Function.Call.
-func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []value.Value) ([]value.Value, error) {
+//
+// caller and depth matter only when dispatch falls back to an
+// interpreted method body: caller links recover() to the right frame,
+// depth is the call depth that body will run at.
+func (p *program) callHostFunc(ctx context.Context, caller *frame, fn *ssa.Function, args []value.Value, depth int) ([]value.Value, error) {
 	if p.env == nil {
 		return nil, fmt.Errorf("interp: %s: no host.Environment registered", fn.Name())
 	}
@@ -36,7 +78,7 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 	// Method on a host type — dispatch through reflect.MethodByName on
 	// the receiver. SSA emits these with the receiver as args[0].
 	if fn.Signature.Recv() != nil && len(args) > 0 {
-		return p.invokeMethodOn(ctx, args[0], fn.Name(), args[1:])
+		return p.invokeMethodOn(ctx, caller, args[0], fn.Name(), args[1:], depth)
 	}
 	// Free function.
 	hf, ok := p.lookupHostFunc(fn, pkgPath)
@@ -45,40 +87,17 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 		// like bytes/list whose methods register through the legacy
 		// MethodDirectCall path that LookupFunc doesn't see.
 		if len(args) > 0 {
-			if results, err := p.invokeMethodOn(ctx, args[0], fn.Name(), args[1:]); err == nil {
-				return results, nil
+			dispatch, err := p.tryInvokeMethodOn(ctx, caller, args[0], fn.Name(), args[1:], depth)
+			if err != nil {
+				return nil, err
+			}
+			if dispatch.found {
+				return dispatch.results, nil
 			}
 		}
 		return nil, fmt.Errorf("interp: host function %s.%s not found", pkgPath, fn.Name())
 	}
-	return hf.Call(args)
-}
-
-func (p *program) callHostFuncDirect(fn *ssa.Function, args []value.Value) ([]value.Value, bool, error) {
-	if p.env == nil {
-		return nil, false, fmt.Errorf("interp: %s: no host.Environment registered", fn.Name())
-	}
-	pkgPath := ""
-	if fn.Pkg != nil && fn.Pkg.Pkg != nil {
-		pkgPath = fn.Pkg.Pkg.Path()
-	} else if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-		pkgPath = obj.Pkg().Path()
-	}
-	if fn.Signature.Recv() != nil && len(args) > 0 {
-		return p.invokeMethodOnDirectResult(args[0], fn.Name(), args[1:])
-	}
-	hf, ok := p.lookupHostFunc(fn, pkgPath)
-	if !ok {
-		if len(args) > 0 {
-			return p.invokeMethodOnDirectResult(args[0], fn.Name(), args[1:])
-		}
-		return nil, false, nil
-	}
-	df, ok := hf.(host.DirectFunction)
-	if !ok {
-		return nil, false, nil
-	}
-	return df.CallDirect(args)
+	return callResolvedHostFunc(hf, bindHostCallbackDepth(ctx, args, depth))
 }
 
 func (p *program) lookupHostFunc(fn *ssa.Function, pkgPath string) (host.Function, bool) {
@@ -99,7 +118,18 @@ func (p *program) lookupHostFunc(fn *ssa.Function, pkgPath string) (host.Functio
 // invokeMethodOn calls receiver.method(args), trying first the
 // interpreted SSA package (for methods on user-defined types) and then
 // reflect.MethodByName on the host receiver.
-func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, method string, args []value.Value) ([]value.Value, error) {
+func (p *program) invokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value, depth int) ([]value.Value, error) {
+	dispatch, err := p.tryInvokeMethodOn(ctx, caller, receiver, method, args, depth)
+	if err != nil {
+		return nil, err
+	}
+	if !dispatch.found {
+		return nil, &methodNotFoundError{method: method, receiver: dispatch.receiverType}
+	}
+	return dispatch.results, nil
+}
+
+func (p *program) tryInvokeMethodOn(ctx context.Context, caller *frame, receiver value.Value, method string, args []value.Value, depth int) (methodDispatchResult, error) {
 	// Methods declared on interpreted types live as SSA functions on
 	// the package, named like "(*AdderStruct).Add" or "AdderStruct.Add".
 	// When the receiver arrived through a MakeInterface box we unwrap
@@ -108,10 +138,14 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 	// than as an interface.
 	dynRecv, rv, err := p.hostReceiverReflect(receiver)
 	if err != nil {
-		return nil, err
+		return methodDispatchResult{}, err
 	}
+	dispatch := methodDispatchResult{receiverType: rv.Type()}
 	if hm, ok := p.lookupHostMethod(rv, method); ok {
-		return hm.Call(dynRecv, args)
+		dispatch.found = true
+		boundArgs := bindHostCallbackDepth(ctx, args, depth)
+		dispatch.results, err = callResolvedHostMethod(hm, dynRecv, boundArgs)
+		return dispatch, err
 	}
 	if fn := p.lookupInterpretedMethod(dynRecv, method); fn != nil {
 		// Go's spec lets a *T receiver call a value-receiver method
@@ -121,9 +155,10 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 		// Field/Store ops will see a kind mismatch.
 		recv := p.adjustReceiverShape(dynRecv, fn)
 		all := append([]value.Value{recv}, args...)
-		return p.callSSA(ctx, nil, fn, all, nil, 0)
+		dispatch.found = true
+		dispatch.results, err = p.callSSA(ctx, caller, fn, all, nil, depth)
+		return dispatch, err
 	}
-	conv := value.DefaultConverter()
 	m := rv.MethodByName(method)
 	if !m.IsValid() {
 		// Try addressable (pointer) receiver — Go auto-takes the
@@ -137,55 +172,22 @@ func (p *program) invokeMethodOn(ctx context.Context, receiver value.Value, meth
 		}
 	}
 	if !m.IsValid() {
-		return nil, fmt.Errorf("interp: method %s not found on %s", method, rv.Type())
+		return dispatch, nil
 	}
+	dispatch.found = true
 	mt := m.Type()
-	rargs := make([]reflect.Value, len(args))
-	for i, a := range args {
-		var target reflect.Type
-		if i < mt.NumIn() {
-			target = mt.In(i)
-		}
-		ra, err := conv.ToReflect(a, target)
-		if err != nil {
-			return nil, fmt.Errorf("interp: method %s arg %d: %w", method, i, err)
-		}
-		rargs[i] = ra
+	boundArgs := bindHostCallbackDepth(ctx, args, depth)
+	rargs, err := p.reflectArgs(mt, boundArgs)
+	if err != nil {
+		return dispatch, fmt.Errorf("interp: method %s %w", method, err)
 	}
 	rresults := m.Call(rargs)
-	out := make([]value.Value, len(rresults))
-	for i, r := range rresults {
-		v, err := conv.FromReflect(r)
-		if err != nil {
-			return nil, fmt.Errorf("interp: method %s result %d: %w", method, i, err)
-		}
-		out[i] = v
-	}
-	return out, nil
-}
-
-func (p *program) invokeMethodOnDirect(receiver value.Value, method string, args []value.Value) (value.Value, bool, error) {
-	dynRecv, rv, err := p.hostReceiverReflect(receiver)
+	out, err := p.valuesFromReflect(rresults)
 	if err != nil {
-		return value.Value{}, false, err
+		return dispatch, fmt.Errorf("interp: method %s %w", method, err)
 	}
-	hm, ok := p.lookupHostMethod(rv, method)
-	if !ok {
-		return value.Value{}, false, nil
-	}
-	dm, ok := hm.(host.DirectMethod)
-	if !ok {
-		return value.Value{}, false, nil
-	}
-	return dm.CallDirect(dynRecv, args)
-}
-
-func (p *program) invokeMethodOnDirectResult(receiver value.Value, method string, args []value.Value) ([]value.Value, bool, error) {
-	result, ok, err := p.invokeMethodOnDirect(receiver, method, args)
-	if err != nil || !ok {
-		return nil, ok, err
-	}
-	return []value.Value{result}, true, nil
+	dispatch.results = out
+	return dispatch, nil
 }
 
 func (p *program) hostReceiverReflect(receiver value.Value) (value.Value, reflect.Value, error) {

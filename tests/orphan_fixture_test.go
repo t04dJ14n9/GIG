@@ -5,9 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"sort"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/t04dJ14n9/gig"
 )
@@ -44,47 +42,6 @@ func runOrderedTestSet(t *testing.T, set testSet, order []string) {
 			t.Fatalf("testcase %q is missing from ordered execution list", fullKey)
 		}
 	}
-}
-
-func runCorrectnessCase(t *testing.T, prog *gig.Program, fullKey string, tc testCase) {
-	t.Helper()
-	t.Run(fullKey, func(t *testing.T) {
-		if reason := knownUnsupportedCases[tc.funcName]; reason != "" {
-			t.Skip(reason)
-		}
-		if reason := knownUnrunnableCases[tc.funcName]; reason != "" {
-			t.Skip(reason)
-		}
-		startInterp := time.Now()
-		result, err := prog.Run(tc.funcName, cloneTestArgs(tc.args)...)
-		interpDuration := time.Since(startInterp)
-		if wantErr := expectedRunErrors[tc.funcName]; wantErr != "" {
-			if err == nil {
-				t.Fatalf("Run succeeded, want error containing %q", wantErr)
-			}
-			if !strings.Contains(err.Error(), wantErr) {
-				t.Fatalf("Run error = %v, want contains %q", err, wantErr)
-			}
-			return
-		}
-		if err != nil {
-			t.Fatalf("Run error: %v", err)
-		}
-		if check := customResultChecks[tc.funcName]; check != nil {
-			check(t, result)
-			return
-		}
-		if tc.native != nil {
-			startNative := time.Now()
-			expected := callNative(tc.native, cloneTestArgs(tc.args))
-			nativeDuration := time.Since(startNative)
-			compareCorrectnessResults(t, result, expected)
-			ratio := float64(interpDuration) / float64(nativeDuration)
-			t.Logf("interp: %v, native(using reflection): %v, ratio: %.1fx", interpDuration, nativeDuration, ratio)
-		} else {
-			t.Logf("interp: %v (no native comparison for package main source)", interpDuration)
-		}
-	})
 }
 
 func sourceOnlyTests(src string, args map[string][]any) map[string]testCase {

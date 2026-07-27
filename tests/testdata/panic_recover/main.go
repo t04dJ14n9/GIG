@@ -348,6 +348,90 @@ func PanicInDeferWithRecoverInDefer() int {
 	return result
 }
 
+// ============================================================================
+// Recover Through Deferred Method Dispatch
+// ============================================================================
+
+type methodRecoverer struct {
+	result *int
+}
+
+func (r methodRecoverer) Recover() {
+	if recover() != nil {
+		*r.result = 1
+	}
+}
+
+type recoverMethod interface {
+	Recover()
+}
+
+// RecoverWithDirectInterfaceMethod tests recover in a directly deferred
+// interface method call.
+func RecoverWithDirectInterfaceMethod() (result int) {
+	var r recoverMethod = methodRecoverer{result: &result}
+	defer r.Recover()
+	panic("boom")
+}
+
+// RecoverWithConcreteMethodValue tests recover through the synthetic bound
+// wrapper for a concrete method value.
+func RecoverWithConcreteMethodValue() (result int) {
+	r := methodRecoverer{result: &result}
+	recoverMethod := r.Recover
+	defer recoverMethod()
+	panic("boom")
+}
+
+// RecoverWithInterfaceMethodValue tests recover through the synthetic bound
+// wrapper for an interface method value.
+func RecoverWithInterfaceMethodValue() (result int) {
+	var r recoverMethod = methodRecoverer{result: &result}
+	recoverMethod := r.Recover
+	defer recoverMethod()
+	panic("boom")
+}
+
+// RecoverWithMethodExpression tests recover through the synthetic thunk for
+// an interface method expression.
+func RecoverWithMethodExpression() (result int) {
+	var r recoverMethod = methodRecoverer{result: &result}
+	defer recoverMethod.Recover(r)
+	panic("boom")
+}
+
+type promotedMethodRecoverer struct {
+	methodRecoverer
+}
+
+// RecoverWithPromotedMethod tests recover in a directly deferred promoted
+// method.
+func RecoverWithPromotedMethod() (result int) {
+	r := promotedMethodRecoverer{
+		methodRecoverer: methodRecoverer{result: &result},
+	}
+	defer r.Recover()
+	panic("boom")
+}
+
+func recoverThroughHelper() bool { return recover() != nil }
+
+// RecoverHelperCannotRecover verifies that an ordinary helper call is not a
+// direct recover call, even when the helper is called by a deferred closure.
+func RecoverHelperCannotRecover() (result int) {
+	defer func() {
+		if recover() != nil {
+			result = 2
+		}
+	}()
+	defer func() {
+		if recoverThroughHelper() {
+			result = 1
+		}
+	}()
+	panic("boom")
+}
+
 // RecoverOnlyInDefer tests that recover only works in defer
 func RecoverOnlyInDefer() int {
 	// recover() called outside defer returns nil

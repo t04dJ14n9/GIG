@@ -103,8 +103,6 @@ func TestExtremeStress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer prog.Close()
-
 	r, err := prog.Run("EvaluateRule", 1, " alice ", 81.0)
 	if err != nil {
 		t.Fatal(err)
@@ -134,10 +132,10 @@ func TestExtremeStress(t *testing.T) {
 	for round := 0; round < rounds; round++ {
 		for li, concurrency := range levels {
 			ops, errs, heap, gc := runStressLevel(concurrency, duration, func(gID, i int) error {
-			execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer execCancel()
-			_, err := prog.RunWithContext(execCtx, "EvaluateRule", gID*10000+i, " bob ", float64(30+i%70))
-			return err
+				execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer execCancel()
+				_, err := prog.RunWithContext(execCtx, "EvaluateRule", gID*10000+i, " bob ", float64(30+i%70))
+				return err
 			})
 			tp := float64(ops) / duration.Seconds()
 			gigStats[li][round] = stats{
@@ -267,10 +265,10 @@ func median3(a, b, c float64) float64 {
 		a, b = b, a
 	}
 	if b > c {
-		b, c = c, b
+		b = c
 	}
 	if a > b {
-		a, b = b, a
+		b = a
 	}
 	return b
 }

@@ -14,7 +14,6 @@ func init() {
 	pkg := importer.RegisterPackage("mime/multipart", "multipart")
 
 	// Functions
-	pkg.AddFunction("FileContentDisposition", mime_multipart.FileContentDisposition, "", directCallMimeMultipartFileContentDisposition)
 	pkg.AddFunction("NewReader", mime_multipart.NewReader, "", directCallMimeMultipartNewReader)
 	pkg.AddFunction("NewWriter", mime_multipart.NewWriter, "", directCallMimeMultipartNewWriter)
 
@@ -98,22 +97,6 @@ func directResultsMimeMultipart(vals ...any) ([]value.Value, error) {
 		out[i] = vv
 	}
 	return out, nil
-}
-
-func directCallMimeMultipartFileContentDisposition(args []value.Value) ([]value.Value, error) {
-	if len(args) != 2 {
-		return nil, fmt.Errorf("arg count %d != 2", len(args))
-	}
-	a0, err := directArgMimeMultipart[string](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	a1, err := directArgMimeMultipart[string](args[1])
-	if err != nil {
-		return nil, fmt.Errorf("arg 1: %w", err)
-	}
-	r0 := mime_multipart.FileContentDisposition(a0, a1)
-	return directResultsMimeMultipart(r0)
 }
 
 func directCallMimeMultipartNewReader(args []value.Value) ([]value.Value, error) {

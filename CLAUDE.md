@@ -4,132 +4,118 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Gig** is a high-performance Go interpreter for embedding Go code in Go applications. It uses SSA-based compilation to a stack-based VM, with zero-reflection optimizations for stdlib calls. Single external dependency: `golang.org/x/tools` (for SSA IR).
+**Gig** embeds a Go interpreter in a Go application. Source is parsed, type-checked, and lowered to SSA by `go/ssa`, then executed by a direct SSA tree-walking interpreter. There is **no bytecode, no opcode table, and no VM** — if you find docs describing those, they describe the pre-rewrite design (see `docs/PLAN.md`).
+
+Runtime dependency: `golang.org/x/tools` (SSA IR) only.
+
+## Modules
+
+The repo is **five separate Go modules**. `go build ./...` at the root does not cover the others:
+
+| Module | Replace directive | Note |
+|---|---|---|
+| `.` (root) | — | library |
+| `cmd/gig` | **none** — pins published `gig v1.7.7` | CLI; see gotcha below |
+| `benchmarks` | `=> ../` | cross-interpreter benchmarks |
+| `examples/simple`, `examples/custom` | `=> ../..` | |
+
+**Gotcha:** `cmd/gig` builds against the *released* library, not your working tree. Breaking changes to the root package's exported API compile clean in CI and only break `cmd/gig` after the next tag. Verify manually with a temporary `replace` before changing root-package exports.
 
 ## Commands
 
 ```bash
-# Build
+# Build / test (root module)
 go build ./...
+go test -race ./...
+go test -race -run TestName ./tests/          # single test
+go test -race -run 'TestCorrectness/subtest' ./tests/
 
-# Run all tests
-go test -v -race ./...
+# Other modules must be run from their own directory
+cd cmd/gig && go test -race ./...
+cd benchmarks && go test -bench=. -benchmem -count=5 -run='^$' ./...
 
-# Run a single test
-go test -v -run TestFunctionName ./tests/
+# Benchmarks (Gig vs native Go, paired Benchmark{Gig,Native}_* )
+go test -bench='BenchmarkGig' -benchmem -count=6 -run='^$' ./tests/
 
-# Run benchmarks
-go test -bench=. -benchmem -count=5 -run='^$' ./tests/
-
-# Cross-interpreter benchmarks (vs Yaegi, GopherLua)
-go test -bench=. -benchmem -count=5 -run='^$' ./benchmarks/
-
-# Lint
+# Lint (CI pins golangci-lint v2.4.0; runs on root AND cmd/gig)
 golangci-lint run --timeout=5m
 
-# Security scan
-gosec -exclude-generated -exclude-dir=stdlib/packages ./...
+# Security scan (G115 excluded: narrowing conversions are semantically required)
+gosec -exclude=G115 -exclude-generated -exclude-dir=stdlib/packages ./...
 
-# Generate registration code for a package dir
-# IMPORTANT: always use go1.23.1 explicitly — using a newer Go will generate
-# symbols that don't exist in go1.23 (e.g. bytes.FieldsSeq, net/http.CrossOriginProtection)
-go1.23.1 run ./cmd/gig gen <dir>
+# Interactive SSA study lab (loopback only; analysis-only, never executes input)
+go run ./cmd/ssa-study        # http://127.0.0.1:8080
 
-# Initialize a new dependency package
-go1.23.1 run ./cmd/gig init -package <name>
+# Generate stdlib/package registration code
+# MUST be go1.23.1 — gen reflects over the running toolchain's stdlib,
+# so a newer toolchain emits wrappers for symbols absent from go1.23
+# (e.g. bytes.FieldsSeq, net/http.CrossOriginProtection).
+# Build from the nested CLI module, then run the binary from the module
+# whose dependencies are being generated so third-party imports resolve.
+(cd cmd/gig && go1.23.1 build -o /tmp/gig .)
+/tmp/gig gen ./stdlib
+(cd examples/custom && /tmp/gig gen ./mydep)
 ```
+
+CI matrix builds the root module on Go 1.23–1.26, so avoid post-1.23 stdlib APIs in library code.
 
 ## Architecture
 
-### Compilation Pipeline
-
 ```
-Go Source → go/parser → go/types (type check) → go/ssa (SSA IR) → compiler → bytecode → VM
-```
-
-1. **Parse**: `go/parser` produces AST (`compiler/parser/`)
-2. **Type Check**: Custom `importer/` resolves external packages via a global registry
-3. **SSA Build**: `golang.org/x/tools/go/ssa` produces SSA IR (`compiler/ssa/`)
-4. **Compile** (`compiler/`): SSA instructions → bytecode opcodes with symbol tables
-5. **Optimize** (`compiler/optimize/`): 4-pass pipeline — peephole fusion, slice ops, int specialization, move fusion
-6. **Execute** (`vm/`): Stack-based VM with frame pooling, inline caching, context cancellation
-
-### Key Packages
-
-| Package | Role |
-|---|---|
-| `gig.go` | Public API: `Build()`, `Run()`, `RunWithContext()`, security checks |
-| `model/bytecode/` | Shared kernel: `Program`, `CompiledFunction`, `OpCode` (~100 opcodes + 17 superinstructions) |
-| `model/value/` | 32-byte tagged-union `Value` struct — zero allocation for primitives |
-| `model/external/` | `ExternalFuncInfo`, `MethodInfo` — metadata for registered external functions |
-| `compiler/` | SSA → bytecode translation (`compile_func.go`, `compile_instr.go`, `compile_value.go`, `compile_ext.go`) |
-| `compiler/optimize/` | 4-pass optimization pipeline |
-| `compiler/peephole/` | Pattern-based superinstruction fusion (17 patterns) |
-| `vm/` | Stack-based VM: fetch-decode-execute loop, frame pooling, goroutine spawning |
-| `importer/` | `types.Importer` implementation, `reflect.Type` ↔ `types.Type` conversion, global package registry |
-| `runner/` | VM execution orchestration: init() handling, VMPool (lock-free sync.Pool), global state snapshots |
-| `cmd/gig/` | CLI: `init`, `gen`, `dump` subcommands |
-| `cmd/gig/gentool/` | Code generation engine: DirectCall wrappers, registration code |
-| `stdlib/packages/` | 71 pre-generated stdlib wrappers with DirectCall dispatch |
-
-### Public API
-
-```go
-// Build compiles Go source code into a Program
-prog, err := gig.Build(source, opts...)
-
-// Run executes a named function
-result, err := prog.Run("main")
-
-// RunWithContext supports context cancellation/timeout
-result, err := prog.RunWithContext(ctx, "main", args...)
-
-// Build options
-gig.WithRegistry(r)          // Custom package registry
-gig.WithAllowPanic()         // Allow panic() in interpreted code
+Go source
+  → internal/frontend   parse → go/types → policy validation → go/ssa
+  → internal/interp     direct SSA interpreter
+        ↕ host          the external-Go boundary (interface, not globals)
 ```
 
-### Value System
+`gig.go` is the entire public API surface: `Build`, `Program.Run`, `Program.RunWithContext`, `WithRegistry`, `WithAllowPanic`.
 
-`value.Value` is a 32-byte tagged union (`kind` + `num` + `obj`). Primitives (bool, int, float, uint, nil) are stored inline with zero heap allocation. Composite types (slice, map, string, struct, interface) go through `obj`. Key files: `model/value/value.go` (core), `arithmetic.go` (unboxed math), `container.go` (slice/map ops), `convert.go` (type conversion).
+### internal/frontend
 
-### External Package Integration
+Owns parse, type-check, banned-import and panic-policy enforcement, implicit-import insertion, and SSA construction. Produces an `frontend.Unit`. Policy lives here, not in the interpreter.
 
-External Go packages must be registered before use:
-1. **`register.RegisterPackage()`** — runtime registration with reflect-based dispatch
-2. **DirectCall wrappers** (generated by `cmd/gig/gentool/`) — zero-reflection, ~5x faster; generated files go in `stdlib/packages/` or custom package directories
+### internal/interp — the execution core
 
-The `importer/` package maintains a global registry that bridges `go/types` type checking and VM dispatch. Registration flow: `RegisterPackage()` → importer stores reflect metadata → type checker resolves imports → compiler emits `OpCallExternal` → VM uses inline cache for dispatch.
+Read these in order: `interp.go` (interfaces) → `frame.go` (activation record + dispatch loop) → `plan.go` (per-block precompiled plan) → `ops.go` (per-instruction visitors). Type resolution (`types.Type` → `reflect.Type`, memoised) lives in `type_resolver.go`.
 
-### Security Model
+`plan.go` is deliberately a second way to execute the same SSA and it is load-bearing: deleting it in favour of pure `visitInstr` dispatch was measured at 5.9×–14.8× slower on int loops (see the file header and `docs/superpowers/specs/2026-07-26-interp-readability-pass-design.md`). Planned ops must stay semantically identical to the generic handlers they shortcut.
 
-At compile time, Gig bans imports of `unsafe`, `reflect`, and `panic` (unless `WithAllowPanic()` is set). The VM supports context-based cancellation (checked every 1024 instructions). Frame depth is capped at 1024.
+- **`frameLayout`** — computed once per `*ssa.Function`, cached in `p.layouts` (a `sync.Map`). Holds `values []ssa.Value`, `index map[ssa.Value]int`, and one `blockPlan` per basic block.
+- **`frame.values []value.Value`** — the *single* mutable store for a call. There is no separate cell map, slot-kind array, or free-var array; earlier revisions had all three. Frames with ≤8 values are allocated inline (`newFrameWithLayout`) to avoid a second allocation.
+- **`blockPlan`** — `phis` resolved at block entry, then `ops`. Each `plannedOp` has a `planKind`: `planGeneric` defers to `visitInstr`, while `planIntBinOp` / `planIf` / `planJump` / `planIntIndexLoad` / `planIntIndexStore` are precompiled fast paths that read operands through `intRef` (a frame index *or* an inlined constant) and never touch the map.
+- **`continuation`** — the dispatch signal: `contNext` / `contJump` / `contReturn`. Only `runIf`, `runJump`, and `runReturn` return the full `(continuation, []value.Value, error)` triple; every other handler returns plain `error` and `visitInstr` supplies `contNext`. A handler's signature therefore tells you whether its instruction can affect control flow.
+- Context cancellation is polled every `cancelCheckInterval` (1024) instructions.
 
-### Performance Notes
+**Hot-path cost to know:** `planGeneric` ops go through `readValue`, which ends in `fr.value(v)` → `fr.layout.index[v]`, a **map lookup per operand read**. Only the planned kinds above avoid it. Widening the plan to pre-resolve operand indices for all instructions is the main remaining optimization.
 
-- Frame pooling eliminates allocations in recursion (Fib25: 2.1M → 7 allocations)
-- Prebaked constants in `Program` avoid per-instruction `FromInterface` calls
-- Integer shadow array (`[]int64`) enables unboxed int arithmetic in hot loops
-- Inline caching for external function call dispatch
-- lock-free VMPool via `sync.Pool` (50% throughput improvement in high concurrency)
-- 17 peephole superinstructions fuse common opcode sequences (e.g. `LOCALLOCALADD`, `LOCALCONSTMUL`)
+### Addressability model
+
+Mutability lives in `frame.values` and global storage — never inside a `value.Value`, which is immutable once constructed. Addressable SSA values (`Alloc`, `Locals`) hold a **reflected pointer** in their slot; `runAlloc` and the local pre-binding in `callSSAInto` both use `makeAddressable` + `Addr()`. Loads/stores go through reflect on that pointer.
+
+### host — the external boundary
+
+`host.Environment` is an interface composing `types.Importer` plus `LookupFunc/Var/Const/Type/Method/ReflectType/InterfaceProxy`. The frontend type-checks against it and the interpreter dispatches through it, so there is no global registry reachable from the engine. `importer/` bridges registered packages (`importer.RegisterPackage`, `stdlib/packages/`, 69 generated wrappers) into that interface via `host.FromRegistry`.
+
+Host calls prefer `host.DirectFunction` / `host.DirectMethod` (generated, no reflect) and fall back to `reflect.Call` — see `callResolvedHostFunc` / `callResolvedHostMethod` in `host_call.go`. `tryInvokeMethodOn` returns a `methodDispatchResult` whose `found` flag distinguishes "no such method" from "the call itself failed"; keep that distinction — collapsing it back into an error-means-miss check silently swallows real host errors.
+
+### value
+
+`value.Value` is a tagged union; scalars (bool/int/uint/float/nil) live inline, composites in `obj`. The package is leaf-level — it may import only `go/types` and the stdlib, never `host`, `frontend`, or `interp`.
+
+### Security model
+
+Compile-time: `unsafe` and `reflect` imports are rejected; `panic()` is rejected unless `WithAllowPanic()`. Runtime: context cancellation, and a call-depth cap (`Config.MaxDepth`, default 1024) checked in `callSSAInto`.
+
+The depth cap is enforced on **every** path that re-enters interpreted code — direct calls, interface-method invocation, host-method fallback, and fired defers. `tests/depth_guard_test.go` pins this; a reset-to-zero on any of those paths lets recursion kill the host process with an unrecoverable stack overflow, so keep `depth` threaded when adding a new dispatch path.
 
 ## Testing
 
-Tests live in `tests/` with test data in `tests/testdata/` (44 test case directories). Key test files:
-- `tests/correctness_test.go` — comprehensive feature correctness tests (161KB)
-- `tests/strange_syntax_test.go` — edge cases and obscure Go features
-- `tests/benchmark_test.go` — performance benchmarks
-- `tests/stress_leak_test.go` — memory leak and concurrency stress tests
-- `tests/fuzz_test.go` — fuzzing tests
-- `tests/known_issue_test.go` — known issues and regressions
-- `gig_test.go` — public API tests
+- `tests/` — the bulk. `correctness_test.go` (feature matrix), `strange_syntax_test.go` (obscure Go), `concurrency_*`, `stress_leak_test.go`, `fuzz_test.go`, `known_issue_test.go`, `sandbox_test.go`. Fixtures in `tests/testdata/` (49 dirs) are embedded as `<name>Src` strings and paired with a `<name>Tests` map. `TestCorrectnessCaseCoverageAudit` (`testcase_coverage_test.go`) parses each fixture source and fails if an exported function has no test case — so adding a function to a fixture obliges you to register a case. Its list of audited sets is maintained by hand; a brand-new fixture set must be added there explicitly or it is silently unaudited.
+- `internal/interp/` — unit tests for the execution model: `frame_value_test.go` (layout/slot invariants), `interp_behaviour_test.go` (index-store write-through, phi/branch loops), `host_call_test.go`, `call_storage_test.go`, and `perf_test.go`, whose `TestInterp*AllocationsAreBounded` ceilings are the guardrail that catches structural perf regressions — do not raise them to make a refactor pass.
+- Root — `gig_test.go` (public API), `cancellation_test.go`, `race_{enabled,disabled}_test.go` (build-tag split).
 
-Cross-interpreter benchmarks (vs Yaegi, GopherLua) live in `benchmarks/`.
+Benchmarks in `tests/benchmark_test.go` are paired `BenchmarkGig_X` / `BenchmarkNative_X`, so a run reports interpreter overhead against native Go directly.
 
-## Documentation
+## Docs
 
-Detailed internals documentation lives in `docs/` (41 files). Key references:
-- `docs/gig-internals.md` — comprehensive architecture guide (47KB)
-- `docs/cli-guide.md` — code generation workflow
-- `docs/context-cancellation.md` — context/timeout support
+`docs/` holds the design record. `docs/PLAN.md` is the rewrite plan and explains why the bytecode VM was removed. `docs/ARCHITECTURE.md` (+ `_CN`) is the current walkthrough; `docs/PIPELINE_THEORY.md` explains how each frontend stage works (scanner, LL(1) parsing, go/types passes, SSA/CFG construction), with `docs/SSA_PIPELINE.md` and `docs/AST_SSA_REFERENCE.md` as the API-level references. `docs/superpowers/{plans,specs}/` are dated per-change design docs — check for one matching the area you are changing before redesigning it.

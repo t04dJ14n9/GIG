@@ -23,6 +23,8 @@ More details:
 - [Architecture walkthrough](docs/ARCHITECTURE.md)
 - [Chinese architecture walkthrough](docs/ARCHITECTURE_CN.md)
 - [Performance optimization log](docs/PERFORMANCE_OPTIMIZATION_2026-06_CN.md)
+- [Interactive SSA Study Lab](docs/SSA_STUDY_LAB.md)
+- [Pipeline theory: scanning, LL(1) parsing, go/types passes, SSA/CFG construction](docs/PIPELINE_THEORY.md)
 
 ## Features
 
@@ -52,6 +54,21 @@ More details:
 - **Native-parity harness**: tests compare interpreted results with native Go
   execution for complex syntax, closures, external calls, panic/recover, and
   other edge cases.
+
+## Learn the source-to-SSA pipeline interactively
+
+Run the local study lab from a repository checkout:
+
+```bash
+go run ./cmd/ssa-study
+```
+
+Then open [http://127.0.0.1:8080](http://127.0.0.1:8080). Four guided
+experiments connect editable Go source to scanner tokens, AST nodes,
+`go/types` facts, and x/tools SSA/CFG blocks. A free lab accepts your own
+single-file examples. Analysis stays local and never executes the submitted
+program. See the [study guide](docs/SSA_STUDY_LAB.md) for controls, limits, and
+the learning sequence.
 
 ## Installation
 
@@ -249,6 +266,12 @@ gig gen ./mydep
 # Inspect CLI help.
 gig --help
 ```
+
+Run `gig gen` with the minimum Go toolchain declared by the target module and
+from that module's directory. The generator reflects over the active
+toolchain and resolves third-party imports from the current module; using a
+newer Go release can emit wrappers that no longer compile at the supported
+minimum version.
 
 ## Architecture
 

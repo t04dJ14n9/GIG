@@ -28,8 +28,6 @@ func init() {
 	pkg.AddFunction("EqualFold", bytes.EqualFold, "", directCallBytesEqualFold)
 	pkg.AddFunction("Fields", bytes.Fields, "", directCallBytesFields)
 	pkg.AddFunction("FieldsFunc", bytes.FieldsFunc, "", directCallBytesFieldsFunc)
-	pkg.AddFunction("FieldsFuncSeq", bytes.FieldsFuncSeq, "", directCallBytesFieldsFuncSeq)
-	pkg.AddFunction("FieldsSeq", bytes.FieldsSeq, "", directCallBytesFieldsSeq)
 	pkg.AddFunction("HasPrefix", bytes.HasPrefix, "", directCallBytesHasPrefix)
 	pkg.AddFunction("HasSuffix", bytes.HasSuffix, "", directCallBytesHasSuffix)
 	pkg.AddFunction("Index", bytes.Index, "", directCallBytesIndex)
@@ -42,7 +40,6 @@ func init() {
 	pkg.AddFunction("LastIndexAny", bytes.LastIndexAny, "", directCallBytesLastIndexAny)
 	pkg.AddFunction("LastIndexByte", bytes.LastIndexByte, "", directCallBytesLastIndexByte)
 	pkg.AddFunction("LastIndexFunc", bytes.LastIndexFunc, "", directCallBytesLastIndexFunc)
-	pkg.AddFunction("Lines", bytes.Lines, "", directCallBytesLines)
 	pkg.AddFunction("Map", bytes.Map, "", directCallBytesMap)
 	pkg.AddFunction("NewBuffer", bytes.NewBuffer, "", directCallBytesNewBuffer)
 	pkg.AddFunction("NewBufferString", bytes.NewBufferString, "", directCallBytesNewBufferString)
@@ -54,9 +51,7 @@ func init() {
 	pkg.AddFunction("Split", bytes.Split, "", directCallBytesSplit)
 	pkg.AddFunction("SplitAfter", bytes.SplitAfter, "", directCallBytesSplitAfter)
 	pkg.AddFunction("SplitAfterN", bytes.SplitAfterN, "", directCallBytesSplitAfterN)
-	pkg.AddFunction("SplitAfterSeq", bytes.SplitAfterSeq, "", directCallBytesSplitAfterSeq)
 	pkg.AddFunction("SplitN", bytes.SplitN, "", directCallBytesSplitN)
-	pkg.AddFunction("SplitSeq", bytes.SplitSeq, "", directCallBytesSplitSeq)
 	pkg.AddFunction("Title", bytes.Title, "", directCallBytesTitle)
 	pkg.AddFunction("ToLower", bytes.ToLower, "", directCallBytesToLower)
 	pkg.AddFunction("ToLowerSpecial", bytes.ToLowerSpecial, "", directCallBytesToLowerSpecial)
@@ -372,34 +367,6 @@ func directCallBytesFieldsFunc(args []value.Value) ([]value.Value, error) {
 	return directResultsBytes(r0)
 }
 
-func directCallBytesFieldsFuncSeq(args []value.Value) ([]value.Value, error) {
-	if len(args) != 2 {
-		return nil, fmt.Errorf("arg count %d != 2", len(args))
-	}
-	a0, err := directArgBytes[[]byte](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	a1, err := directArgBytes[func(rune) bool](args[1])
-	if err != nil {
-		return nil, fmt.Errorf("arg 1: %w", err)
-	}
-	r0 := bytes.FieldsFuncSeq(a0, a1)
-	return directResultsBytes(r0)
-}
-
-func directCallBytesFieldsSeq(args []value.Value) ([]value.Value, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("arg count %d != 1", len(args))
-	}
-	a0, err := directArgBytes[[]byte](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	r0 := bytes.FieldsSeq(a0)
-	return directResultsBytes(r0)
-}
-
 func directCallBytesHasPrefix(args []value.Value) ([]value.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("arg count %d != 2", len(args))
@@ -592,18 +559,6 @@ func directCallBytesLastIndexFunc(args []value.Value) ([]value.Value, error) {
 	return directResultsBytes(r0)
 }
 
-func directCallBytesLines(args []value.Value) ([]value.Value, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("arg count %d != 1", len(args))
-	}
-	a0, err := directArgBytes[[]byte](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	r0 := bytes.Lines(a0)
-	return directResultsBytes(r0)
-}
-
 func directCallBytesMap(args []value.Value) ([]value.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("arg count %d != 2", len(args))
@@ -780,22 +735,6 @@ func directCallBytesSplitAfterN(args []value.Value) ([]value.Value, error) {
 	return directResultsBytes(r0)
 }
 
-func directCallBytesSplitAfterSeq(args []value.Value) ([]value.Value, error) {
-	if len(args) != 2 {
-		return nil, fmt.Errorf("arg count %d != 2", len(args))
-	}
-	a0, err := directArgBytes[[]byte](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	a1, err := directArgBytes[[]byte](args[1])
-	if err != nil {
-		return nil, fmt.Errorf("arg 1: %w", err)
-	}
-	r0 := bytes.SplitAfterSeq(a0, a1)
-	return directResultsBytes(r0)
-}
-
 func directCallBytesSplitN(args []value.Value) ([]value.Value, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("arg count %d != 3", len(args))
@@ -813,22 +752,6 @@ func directCallBytesSplitN(args []value.Value) ([]value.Value, error) {
 		return nil, fmt.Errorf("arg 2: %w", err)
 	}
 	r0 := bytes.SplitN(a0, a1, a2)
-	return directResultsBytes(r0)
-}
-
-func directCallBytesSplitSeq(args []value.Value) ([]value.Value, error) {
-	if len(args) != 2 {
-		return nil, fmt.Errorf("arg count %d != 2", len(args))
-	}
-	a0, err := directArgBytes[[]byte](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	a1, err := directArgBytes[[]byte](args[1])
-	if err != nil {
-		return nil, fmt.Errorf("arg 1: %w", err)
-	}
-	r0 := bytes.SplitSeq(a0, a1)
 	return directResultsBytes(r0)
 }
 

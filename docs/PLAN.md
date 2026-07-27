@@ -52,10 +52,9 @@ typed execution plans as implementation details.
 - Reflection remains the fallback for host boundaries or composite cases that
   do not have a typed fast path.
 - The global registry remains for generated standard-library wrappers and
-  compatibility. Isolation-sensitive callers should use `NewSandboxRegistry`
-  or `WithRegistry`.
-- `Program.Close` is a compatibility no-op; the current interpreter does not
-  own external resources that require teardown.
+  importer registration helpers. Isolation-sensitive callers should pass an
+  `importer.NewRegistry()` instance through `WithRegistry`.
+- A `Program` does not own external resources or require teardown.
 
 ## Active Roadmap
 

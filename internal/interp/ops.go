@@ -1,8 +1,9 @@
 // ops.go is the instruction dispatcher. It pattern-matches on
 // ssa.Instruction concrete types and routes each one to a small
-// handler. Phase 6 vertical slice covers scalar arithmetic, control
-// flow, function calls, and Alloc/Store. Composite types, closures,
-// host calls, defer/panic/recover, and concurrency follow in 6.2+.
+// handler: scalar arithmetic, control flow, calls, and memory ops live
+// here; composite-type ops in composite.go, closures in closure.go,
+// host dispatch in host_call.go, defer/panic/recover in defer_panic.go,
+// and concurrency in goroutine.go.
 package interp
 
 import (
@@ -17,16 +18,18 @@ import (
 	"github.com/t04dJ14n9/gig/value"
 )
 
-// visitInstr dispatches one SSA instruction. The triple return is
-// (continuation, return-values-when-Return, error). Only contReturn
-// uses the value slice; otherwise it is nil.
-func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, depth int) (continuation, []value.Value, error) {
+// visitInstr dispatches one SSA instruction. Most handlers compute a
+// value or perform an effect and return only error; execution then
+// continues with the next instruction. Only the control-flow handlers
+// return the full triple: runIf and runJump yield contJump, and
+// runReturn yields contReturn with the function's result values.
+func (p *program) visitInstr(fr *frame, instr ssa.Instruction, depth int, singleResult *value.Value) (continuation, []value.Value, error) {
 	switch x := instr.(type) {
 	case *ssa.DebugRef:
 		return contNext, nil, nil
 
 	case *ssa.Return:
-		return p.runReturn(fr, x)
+		return p.runReturn(fr, x, singleResult)
 
 	case *ssa.If:
 		return p.runIf(fr, x)
@@ -35,94 +38,94 @@ func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, de
 		return p.runJump(fr, x)
 
 	case *ssa.BinOp:
-		return p.runBinOp(fr, x)
+		return contNext, nil, p.runBinOp(fr, x)
 
 	case *ssa.UnOp:
-		return p.runUnOp(fr, x)
+		return contNext, nil, p.runUnOp(fr, x)
 
 	case *ssa.Convert:
-		return p.runConvert(fr, x)
+		return contNext, nil, p.runConvert(fr, x)
 
 	case *ssa.ChangeType:
-		return p.runChangeType(fr, x)
+		return contNext, nil, p.runChangeType(fr, x)
 
 	case *ssa.ChangeInterface:
-		return p.runChangeInterface(fr, x)
+		return contNext, nil, p.runChangeInterface(fr, x)
 
 	case *ssa.MakeInterface:
-		return p.runMakeInterface(fr, x)
+		return contNext, nil, p.runMakeInterface(fr, x)
 
 	case *ssa.Call:
-		return p.runCall(caller, fr, x, depth)
+		return contNext, nil, p.runCall(fr, x, depth)
 
 	case *ssa.Alloc:
-		return p.runAlloc(fr, x)
+		return contNext, nil, p.runAlloc(fr, x)
 
 	case *ssa.Store:
-		return p.runStore(fr, x)
+		return contNext, nil, p.runStore(fr, x)
 
 	case *ssa.Field:
-		return p.runField(fr, x)
+		return contNext, nil, p.runField(fr, x)
 
 	case *ssa.FieldAddr:
-		return p.runFieldAddr(fr, x)
+		return contNext, nil, p.runFieldAddr(fr, x)
 
 	case *ssa.IndexAddr:
-		return p.runIndexAddr(fr, x)
+		return contNext, nil, p.runIndexAddr(fr, x)
 
 	case *ssa.Index:
-		return p.runIndex(fr, x)
+		return contNext, nil, p.runIndex(fr, x)
 
 	case *ssa.Slice:
-		return p.runSlice(fr, x)
+		return contNext, nil, p.runSlice(fr, x)
 
 	case *ssa.Lookup:
-		return p.runLookup(fr, x)
+		return contNext, nil, p.runLookup(fr, x)
 
 	case *ssa.MapUpdate:
-		return p.runMapUpdate(fr, x)
+		return contNext, nil, p.runMapUpdate(fr, x)
 
 	case *ssa.MakeSlice:
-		return p.runMakeSlice(fr, x)
+		return contNext, nil, p.runMakeSlice(fr, x)
 
 	case *ssa.MakeMap:
-		return p.runMakeMap(fr, x)
+		return contNext, nil, p.runMakeMap(fr, x)
 
 	case *ssa.MakeChan:
-		return p.runMakeChan(fr, x)
+		return contNext, nil, p.runMakeChan(fr, x)
 
 	case *ssa.Range:
-		return p.runRange(fr, x)
+		return contNext, nil, p.runRange(fr, x)
 
 	case *ssa.Next:
-		return p.runNext(fr, x)
+		return contNext, nil, p.runNext(fr, x)
 
 	case *ssa.Extract:
-		return p.runExtract(fr, x)
+		return contNext, nil, p.runExtract(fr, x)
 
 	case *ssa.MakeClosure:
-		return p.runMakeClosure(fr, x)
+		return contNext, nil, p.runMakeClosure(fr, x)
 
 	case *ssa.Defer:
-		return p.runDefer(fr, x)
+		return contNext, nil, p.runDefer(fr, x)
 
 	case *ssa.RunDefers:
-		return p.runRunDefers(fr, x)
+		return contNext, nil, p.runRunDefers(fr, x, depth)
 
 	case *ssa.Panic:
-		return p.runPanic(fr, x)
+		return contNext, nil, p.runPanic(fr, x)
 
 	case *ssa.TypeAssert:
-		return p.runTypeAssert(fr, x)
+		return contNext, nil, p.runTypeAssert(fr, x)
 
 	case *ssa.Go:
-		return p.runGo(fr, x)
+		return contNext, nil, p.runGo(fr, x)
 
 	case *ssa.Send:
-		return p.runSend(fr, x)
+		return contNext, nil, p.runSend(fr, x)
 
 	case *ssa.Select:
-		return p.runSelect(fr, x)
+		return contNext, nil, p.runSelect(fr, x)
 
 	case *ssa.Phi:
 		// Already handled by runBlockPhis, but defensively no-op here
@@ -136,17 +139,26 @@ func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, de
 
 // readValue resolves any ssa.Value reference to a runtime Value. It
 // covers: parameters, locals, prior instruction results, *ssa.Const,
-// *ssa.Global (read), and *ssa.Function (Phase 6.2+).
+// *ssa.Global (read), and bare *ssa.Function references.
 func (p *program) readValue(fr *frame, v ssa.Value) (value.Value, error) {
 	if v == nil {
 		return value.MakeNil(), nil
+	}
+	// Common case first: params, locals, and instruction results all
+	// live in the frame's value slots. Consts, globals, and function
+	// references are not frame-local and fall through to the switch.
+	if stored, ok := fr.value(v); ok {
+		return stored, nil
 	}
 	switch x := v.(type) {
 	case *ssa.Const:
 		return p.constToValue(x)
 	case *ssa.Global:
-		if cell, ok := p.globals[x]; ok {
-			return cell.Value, nil
+		p.globalsMu.RLock()
+		stored, ok := p.globals[x]
+		p.globalsMu.RUnlock()
+		if ok {
+			return stored, nil
 		}
 		// Global not in our package — try the host environment for an
 		// external var (fmt.Stdout, encoding/base64.StdEncoding, ...).
@@ -167,11 +179,7 @@ func (p *program) readValue(fr *frame, v ssa.Value) (value.Value, error) {
 		// in slices/maps. No free variables.
 		return p.makeFuncValue(fr.ctx, x, nil)
 	}
-	cell, ok := fr.cell(v)
-	if !ok {
-		return value.Value{}, fmt.Errorf("interp: %s: no cell for %s (%T)", fr.fn.Name(), v.Name(), v)
-	}
-	return cell.Value, nil
+	return value.Value{}, fmt.Errorf("interp: %s: no value for %s (%T)", fr.fn.Name(), v.Name(), v)
 }
 
 // constToValue translates an ssa.Const to a runtime Value. The Convert
@@ -219,14 +227,28 @@ func (p *program) constToValue(c *ssa.Const) (value.Value, error) {
 
 // --- per-instruction runners ------------------------------------------------
 
-func (p *program) runReturn(fr *frame, instr *ssa.Return) (continuation, []value.Value, error) {
-	results := make([]value.Value, len(instr.Results))
-	for i, r := range instr.Results {
-		v, err := p.readValue(fr, r)
+func (p *program) runReturn(
+	fr *frame, instr *ssa.Return, singleResult *value.Value,
+) (continuation, []value.Value, error) {
+	if len(instr.Results) == 1 && singleResult != nil {
+		resolved, err := p.readValue(fr, instr.Results[0])
 		if err != nil {
 			return contNext, nil, err
 		}
-		results[i] = v
+		*singleResult = resolved
+		fr.block = nil
+		return contReturn, nil, nil
+	}
+	var results []value.Value
+	if len(instr.Results) > 0 {
+		results = make([]value.Value, len(instr.Results))
+	}
+	for i, result := range instr.Results {
+		resolved, err := p.readValue(fr, result)
+		if err != nil {
+			return contNext, nil, err
+		}
+		results[i] = resolved
 	}
 	fr.block = nil
 	return contReturn, results, nil
@@ -250,32 +272,27 @@ func (p *program) runJump(fr *frame, _ *ssa.Jump) (continuation, []value.Value, 
 	return contJump, nil, nil
 }
 
-func (p *program) runBinOp(fr *frame, instr *ssa.BinOp) (continuation, []value.Value, error) {
+func (p *program) runBinOp(fr *frame, instr *ssa.BinOp) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	y, err := p.readValue(fr, instr.Y)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	out, err := evalBinOp(instr.Op, x, y, instr.Type(), p)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
-	fr.setCell(instr, out)
-	return contNext, nil, nil
+	fr.setValue(instr, out)
+	return nil
 }
 
-func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Value, error) {
-	if instr.Op == token.MUL {
-		if ref, ok := fr.addrRef(instr.X); ok {
-			return p.storeLoadedAddrRef(fr, instr, ref)
-		}
-	}
+func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	if instr.Op == token.MUL {
 		// Pointer dereference. If x is a reflect-pointer (e.g. from
@@ -293,18 +310,18 @@ func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Val
 			elem := rv.Elem()
 			return p.storeLoadedReflect(fr, instr, elem)
 		}
-		fr.setCell(instr, x)
-		return contNext, nil, nil
+		fr.setValue(instr, x)
+		return nil
 	}
 	if instr.Op == token.ARROW {
 		// Channel receive.
 		rv, err := p.reflectOf(x, nil)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		recv, ok, err := recvWithContext(fr.ctx, rv)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
 		if !ok {
 			recv = reflect.Zero(rv.Type().Elem())
@@ -313,33 +330,33 @@ func (p *program) runUnOp(fr *frame, instr *ssa.UnOp) (continuation, []value.Val
 			tt := instr.Type().(*types.Tuple)
 			rt, err := p.resolver.ResolveType(tt)
 			if err != nil {
-				return contNext, nil, err
+				return err
 			}
 			holder := reflect.New(rt).Elem()
 			holder.Field(0).Set(recv)
 			holder.Field(1).SetBool(ok)
-			fr.setCell(instr, reflectValue(holder))
+			fr.setValue(instr, reflectValue(holder))
 		} else {
 			out, err := p.converter.FromReflect(recv)
 			if err != nil {
-				return contNext, nil, err
+				return err
 			}
-			fr.setCell(instr, out)
+			fr.setValue(instr, out)
 		}
-		return contNext, nil, nil
+		return nil
 	}
 	out, err := evalUnOp(instr.Op, x, instr.Type(), p)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
-	fr.setCell(instr, out)
-	return contNext, nil, nil
+	fr.setValue(instr, out)
+	return nil
 }
 
-func (p *program) storeLoadedReflect(fr *frame, instr ssa.Value, elem reflect.Value) (continuation, []value.Value, error) {
+func (p *program) storeLoadedReflect(fr *frame, instr ssa.Value, elem reflect.Value) error {
 	if s, ok := reflectIntSlice(elem); ok {
-		fr.setCell(instr, value.MakeIntSlice(s))
-		return contNext, nil, nil
+		fr.setValue(instr, value.MakeIntSlice(s))
+		return nil
 	}
 	if needsReflectSnapshot(elem) {
 		snap := reflect.New(elem.Type()).Elem()
@@ -348,10 +365,10 @@ func (p *program) storeLoadedReflect(fr *frame, instr ssa.Value, elem reflect.Va
 	}
 	out, err := p.converter.FromReflect(elem)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
-	fr.setCell(instr, out)
-	return contNext, nil, nil
+	fr.setValue(instr, out)
+	return nil
 }
 
 func reflectIntSlice(rv reflect.Value) ([]int, bool) {
@@ -365,31 +382,23 @@ func reflectIntSlice(rv reflect.Value) ([]int, bool) {
 	return s, ok
 }
 
-func (p *program) storeLoadedAddrRef(fr *frame, instr ssa.Value, ref addrRef) (continuation, []value.Value, error) {
-	if ref.intSlice != nil {
-		fr.setCell(instr, value.MakeInt(int64(ref.intSlice[ref.index])))
-		return contNext, nil, nil
-	}
-	return p.storeLoadedReflect(fr, instr, ref.elem)
-}
-
-func (p *program) runConvert(fr *frame, instr *ssa.Convert) (continuation, []value.Value, error) {
+func (p *program) runConvert(fr *frame, instr *ssa.Convert) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	out, err := p.converter.Convert(x, instr.Type(), p.resolver)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
-	fr.setCell(instr, out)
-	return contNext, nil, nil
+	fr.setValue(instr, out)
+	return nil
 }
 
-func (p *program) runChangeType(fr *frame, instr *ssa.ChangeType) (continuation, []value.Value, error) {
+func (p *program) runChangeType(fr *frame, instr *ssa.ChangeType) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	// ChangeType is a static type rename (e.g. []int -> sort.IntSlice).
 	// The runtime representation is the same, but downstream method
@@ -401,13 +410,13 @@ func (p *program) runChangeType(fr *frame, instr *ssa.ChangeType) (continuation,
 			srcRV.Type() != dstRT && srcRV.Type().ConvertibleTo(dstRT) {
 			out, err := p.converter.FromReflect(srcRV.Convert(dstRT))
 			if err == nil {
-				fr.setCell(instr, out)
-				return contNext, nil, nil
+				fr.setValue(instr, out)
+				return nil
 			}
 		}
 	}
-	fr.setCell(instr, x)
-	return contNext, nil, nil
+	fr.setValue(instr, x)
+	return nil
 }
 
 // runChangeInterface narrows or widens an interface value to a different
@@ -415,20 +424,20 @@ func (p *program) runChangeType(fr *frame, instr *ssa.ChangeType) (continuation,
 // `var w io.Writer = somethingThatIsReadWriter`. The runtime
 // representation in our interp is a KindInterface box; we just rewrap
 // the dynamic value in a holder of the new interface type.
-func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) (continuation, []value.Value, error) {
+func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) error {
 	x, err := p.readValue(fr, instr.X)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	dstRT, err := p.resolver.ResolveType(instr.Type())
 	if err != nil || dstRT.Kind() != reflect.Interface {
-		fr.setCell(instr, x)
-		return contNext, nil, nil //nolint:nilerr // Missing host interface metadata falls back to the original value.
+		fr.setValue(instr, x)
+		return nil //nolint:nilerr // Missing host interface metadata falls back to the original value.
 	}
 	srcRV, err := p.reflectOf(x, nil)
 	if err != nil || !srcRV.IsValid() {
-		fr.setCell(instr, x)
-		return contNext, nil, nil //nolint:nilerr // Unreflectable values remain in their interpreter representation.
+		fr.setValue(instr, x)
+		return nil //nolint:nilerr // Unreflectable values remain in their interpreter representation.
 	}
 	holder := reflect.New(dstRT).Elem()
 	dyn := srcRV
@@ -440,168 +449,187 @@ func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) (con
 	} else if dyn.IsValid() && dyn.Type().ConvertibleTo(dstRT) {
 		holder.Set(dyn.Convert(dstRT))
 	}
-	fr.setCell(instr, value.MakeInterfaceBox(holder))
-	return contNext, nil, nil
+	fr.setValue(instr, value.MakeInterfaceBox(holder))
+	return nil
 }
 
-func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) (continuation, []value.Value, error) {
+func (p *program) runCall(fr *frame, instr *ssa.Call, depth int) error {
 	common := instr.Common()
-	// Interface method invocation: x.M(...) where x: I (interface).
-	// SSA models this with Common.IsInvoke()==true; Common.Method names
-	// the method, and Common.Value is the interface receiver.
 	if common.IsInvoke() {
-		recvV, err := p.readValue(fr, common.Value)
-		if err != nil {
-			return contNext, nil, err
-		}
-		args := make([]value.Value, len(common.Args))
-		for i, a := range common.Args {
-			v, err := p.readValue(fr, a)
-			if err != nil {
-				return contNext, nil, err
-			}
-			args[i] = v
-		}
-		if stored, ok, err := p.invokeMethodOnDirect(recvV, common.Method.Name(), args); err != nil {
-			return contNext, nil, err
-		} else if ok {
-			fr.setCell(instr, stored)
-			return contNext, nil, nil
-		}
-		results, err := p.invokeMethodOn(fr.ctx, recvV, common.Method.Name(), args)
-		if err != nil {
-			return contNext, nil, err
-		}
-		stored, err := p.packResults(instr.Type(), results)
-		if err != nil {
-			return contNext, nil, err
-		}
-		fr.setCell(instr, stored)
-		return contNext, nil, nil
+		return p.runInvokeCall(fr, instr, common, depth)
 	}
-	// Built-ins (len, cap, append, ...) come through as *ssa.Builtin.
-	if b, ok := common.Value.(*ssa.Builtin); ok {
-		out, err := p.callBuiltin(caller, fr, b, common.Args)
+	if builtin, ok := common.Value.(*ssa.Builtin); ok {
+		out, err := p.callBuiltin(fr, builtin, common.Args)
 		if err != nil {
-			return contNext, nil, err
+			return err
 		}
-		fr.setCell(instr, out)
-		return contNext, nil, nil
+		fr.setValue(instr, out)
+		return nil
 	}
-	// Direct call to *ssa.Function — the common case.
 	if fn, ok := common.Value.(*ssa.Function); ok {
-		args := make([]value.Value, len(common.Args))
-		for i, a := range common.Args {
-			v, err := p.readValue(fr, a)
-			if err != nil {
-				return contNext, nil, err
-			}
-			args[i] = v
-		}
-		// Body-less SSA functions are external host symbols (fmt.Sprintf,
-		// etc.) declared via the importer but not implemented in the
-		// interpreted source. Dispatch to host.Environment.
 		if len(fn.Blocks) == 0 {
-			if results, ok, err := p.callHostFuncDirect(fn, args); err != nil {
-				return contNext, nil, err
-			} else if ok {
-				stored, err := p.packResults(instr.Type(), results)
-				if err != nil {
-					return contNext, nil, err
-				}
-				fr.setCell(instr, stored)
-				return contNext, nil, nil
-			}
-			results, err := p.callHostFunc(fr.ctx, fn, args)
-			if err != nil {
-				return contNext, nil, err
-			}
-			stored, err := p.packResults(instr.Type(), results)
-			if err != nil {
-				return contNext, nil, err
-			}
-			fr.setCell(instr, stored)
-			return contNext, nil, nil
+			return p.runHostFunctionCall(fr, instr, fn, common.Args, depth)
 		}
-		results, err := p.callSSA(fr.ctx, fr, fn, args, nil, depth+1)
-		if err != nil {
-			return contNext, nil, err
-		}
-		stored, err := p.packResults(instr.Type(), results)
-		if err != nil {
-			return contNext, nil, err
-		}
-		fr.setCell(instr, stored)
-		return contNext, nil, nil
+		return p.runDirectInterpretedCall(fr, instr, fn, common.Args, depth)
 	}
-	// Indirect call: target is some SSA value whose runtime form is a
-	// reflect.Func (closure produced by MakeClosure, or a function
-	// stored in a slice/struct/map). Read the value, call via reflect.
+	return p.runIndirectCall(fr, instr, common, depth)
+}
+
+func (p *program) readValuesInto(fr *frame, refs []ssa.Value, scratch []value.Value) ([]value.Value, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	var values []value.Value
+	if cap(scratch) >= len(refs) {
+		values = scratch[:len(refs)]
+	} else {
+		values = make([]value.Value, len(refs))
+	}
+	if err := p.fillValues(fr, refs, values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func (p *program) fillValues(fr *frame, refs []ssa.Value, dst []value.Value) error {
+	for i, ref := range refs {
+		resolved, err := p.readValue(fr, ref)
+		if err != nil {
+			return err
+		}
+		dst[i] = resolved
+	}
+	return nil
+}
+
+func (p *program) finishCall(fr *frame, instr *ssa.Call, results []value.Value) error {
+	stored, err := p.packResults(instr.Type(), results)
+	if err != nil {
+		return err
+	}
+	fr.setValue(instr, stored)
+	return nil
+}
+
+// runInvokeCall executes an interface method invocation: x.M(...) where x: I.
+// SSA models this with Common.IsInvoke()==true; Common.Method names the method,
+// and Common.Value is the interface receiver. fr is both the frame reading
+// the operands and the caller of the invoked method; depth+1 keeps the
+// recursion guard honest when the method body is interpreted.
+func (p *program) runInvokeCall(fr *frame, instr *ssa.Call, common *ssa.CallCommon, depth int) error {
+	recvV, err := p.readValue(fr, common.Value)
+	if err != nil {
+		return err
+	}
+	args, err := p.readValuesInto(fr, common.Args, nil)
+	if err != nil {
+		return err
+	}
+	results, err := p.invokeMethodOn(fr.ctx, fr, recvV, common.Method.Name(), args, depth+1)
+	if err != nil {
+		return err
+	}
+	return p.finishCall(fr, instr, results)
+}
+
+// runHostFunctionCall dispatches a body-less SSA function through the host
+// environment.
+func (p *program) runHostFunctionCall(fr *frame, instr *ssa.Call, fn *ssa.Function, refs []ssa.Value, depth int) error {
+	args, err := p.readValuesInto(fr, refs, nil)
+	if err != nil {
+		return err
+	}
+	results, err := p.callHostFunc(fr.ctx, fr, fn, args, depth+1)
+	if err != nil {
+		return err
+	}
+	return p.finishCall(fr, instr, results)
+}
+
+func (p *program) runDirectInterpretedCall(fr *frame, instr *ssa.Call, fn *ssa.Function, refs []ssa.Value, depth int) error {
+	var oneArg [1]value.Value
+	var args []value.Value
+	switch len(refs) {
+	case 0:
+	case 1:
+		arg, err := p.readValue(fr, refs[0])
+		if err != nil {
+			return err
+		}
+		oneArg[0] = arg
+		args = oneArg[:]
+	default:
+		var err error
+		args, err = p.readValuesInto(fr, refs, nil)
+		if err != nil {
+			return err
+		}
+	}
+
+	if fn.Signature.Results().Len() == 1 {
+		var oneResult value.Value
+		_, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, &oneResult)
+		if err != nil {
+			return err
+		}
+		fr.setValue(instr, oneResult)
+		return nil
+	}
+
+	results, err := p.callSSAInto(fr.ctx, fr, fn, args, nil, depth+1, nil)
+	if err != nil {
+		return err
+	}
+	return p.finishCall(fr, instr, results)
+}
+
+// runIndirectCall executes a closure or other function value through its
+// interpreted implementation when available, falling back to reflect.Call.
+func (p *program) runIndirectCall(fr *frame, instr *ssa.Call, common *ssa.CallCommon, depth int) error {
 	target, err := p.readValue(fr, common.Value)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	if fn, ok := target.Func(); ok {
 		if interpreted, ok := fn.(*interpretedFunc); ok {
-			args := make([]value.Value, len(common.Args))
-			for i, a := range common.Args {
-				v, err := p.readValue(fr, a)
-				if err != nil {
-					return contNext, nil, err
-				}
-				args[i] = v
+			args, err := p.readValuesInto(fr, common.Args, nil)
+			if err != nil {
+				return err
 			}
 			results, err := interpreted.CallContext(fr.ctx, args, depth+1)
 			if err != nil {
-				return contNext, nil, err
+				return err
 			}
-			stored, err := p.packResults(instr.Type(), results)
-			if err != nil {
-				return contNext, nil, err
-			}
-			fr.setCell(instr, stored)
-			return contNext, nil, nil
+			return p.finishCall(fr, instr, results)
 		}
 	}
 	rv, err := p.reflectOf(target, nil)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	if rv.Kind() != reflect.Func {
-		return contNext, nil,
-			fmt.Errorf("interp: %s: call target %T is not callable (kind=%s)",
-				fr.fn.Name(), common.Value, rv.Kind())
+		return fmt.Errorf("interp: %s: call target %T is not callable (kind=%s)",
+			fr.fn.Name(), common.Value, rv.Kind())
 	}
-	rargs := make([]reflect.Value, len(common.Args))
-	for i, a := range common.Args {
-		av, err := p.readValue(fr, a)
-		if err != nil {
-			return contNext, nil, err
-		}
-		rargs[i], err = p.converter.ToReflect(av, rv.Type().In(i))
-		if err != nil {
-			return contNext, nil, err
-		}
+	args, err := p.readValuesInto(fr, common.Args, nil)
+	if err != nil {
+		return err
+	}
+	args = bindHostCallbackDepth(fr.ctx, args, depth+1)
+	rargs, err := p.reflectArgs(rv.Type(), args)
+	if err != nil {
+		return err
 	}
 	rresults := rv.Call(rargs)
-	results := make([]value.Value, len(rresults))
-	for i, r := range rresults {
-		v, err := p.converter.FromReflect(r)
-		if err != nil {
-			return contNext, nil, err
-		}
-		results[i] = v
-	}
-	stored, err := p.packResults(instr.Type(), results)
+	results, err := p.valuesFromReflect(rresults)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
-	fr.setCell(instr, stored)
-	return contNext, nil, nil
+	return p.finishCall(fr, instr, results)
 }
 
 // packResults turns a function's []value.Value result tuple into a
-// single Value suitable for storage in the caller's cell. Single
+// single Value suitable for the caller's instruction value slot. Single
 // returns pass through; multi-return tuples become a synthetic
 // reflect-struct so ssa.Extract can read them.
 func (p *program) packResults(t types.Type, results []value.Value) (value.Value, error) {
@@ -631,153 +659,23 @@ func (p *program) packResults(t types.Type, results []value.Value) (value.Value,
 	return reflectValue(holder), nil
 }
 
-// callBuiltin handles the universe-block call targets (len, cap,
-// append, copy, delete, print, println, panic, recover, real, imag,
-// complex). It returns a single Value or an error; callers store the
-// result in the SSA-instruction cell.
-func (p *program) callBuiltin(caller *frame, fr *frame, b *ssa.Builtin, ssaArgs []ssa.Value) (value.Value, error) {
-	args := make([]value.Value, len(ssaArgs))
-	for i, a := range ssaArgs {
-		v, err := p.readValue(fr, a)
-		if err != nil {
-			return value.Value{}, err
-		}
-		args[i] = v
+// callBuiltin resolves SSA operands before delegating to the canonical
+// builtin executor.
+func (p *program) callBuiltin(fr *frame, b *ssa.Builtin, ssaArgs []ssa.Value) (value.Value, error) {
+	var inline [2]value.Value
+	args := inline[:]
+	if len(ssaArgs) > len(inline) {
+		args = make([]value.Value, len(ssaArgs))
+	} else {
+		args = args[:len(ssaArgs)]
 	}
-	switch b.Name() {
-	case "len":
-		rv, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-			rv = rv.Elem()
-		}
-		return value.MakeInt(int64(rv.Len())), nil
-	case "cap":
-		rv, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
-			rv = rv.Elem()
-		}
-		return value.MakeInt(int64(rv.Cap())), nil
-	case "append":
-		if len(args) < 1 {
-			return value.MakeNil(), nil
-		}
-		baseRV, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		if !baseRV.IsValid() {
-			baseRV = reflect.Zero(reflect.TypeOf([]any{}))
-		}
-		// Variadic append produces (slice, slice...) when called as
-		// append(a, b...) — SSA encodes that with a single second arg
-		// that is itself a slice of the right type. Otherwise each
-		// trailing arg is a single element.
-		if len(args) == 2 {
-			otherRV, err := p.reflectOf(args[1], baseRV.Type())
-			if err != nil {
-				return value.Value{}, err
-			}
-			if otherRV.Kind() == reflect.Slice && otherRV.Type() == baseRV.Type() {
-				return reflectValue(reflect.AppendSlice(baseRV, otherRV)), nil
-			}
-		}
-		extras := make([]reflect.Value, 0, len(args)-1)
-		elemRT := baseRV.Type().Elem()
-		for _, a := range args[1:] {
-			rv, err := p.reflectOf(a, elemRT)
-			if err != nil {
-				return value.Value{}, err
-			}
-			extras = append(extras, rv)
-		}
-		return reflectValue(reflect.Append(baseRV, extras...)), nil
-	case "copy":
-		dst, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		src, err := p.reflectOf(args[1], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		return value.MakeInt(int64(reflect.Copy(dst, src))), nil
-	case "delete":
-		m, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		k, err := p.reflectOf(args[1], m.Type().Key())
-		if err != nil {
-			return value.Value{}, err
-		}
-		m.SetMapIndex(k, reflect.Value{})
-		return value.MakeNil(), nil
-	case "print", "println":
-		// Best-effort: print to host stdout. A full implementation
-		// would route into the interpreter's output capture (Phase 6.7);
-		// for the current pass-the-tests goal this matches Go's
-		// print/println behaviour well enough — most tests don't
-		// assert on print output.
-		parts := make([]any, len(args))
-		for i, a := range args {
-			parts[i] = a.Interface()
-		}
-		_ = parts // we deliberately drop the print to keep tests deterministic
-		return value.MakeNil(), nil
-	case "panic":
-		if len(args) > 0 {
-			panic(args[0].Interface())
-		}
-		panic("panic with no argument")
-	case "recover":
-		// recover() consumes panic state from the deferring frame.
-		// In a directly-deferred function the deferring frame and the
-		// running frame are the same (fr is panicking). In a deferred
-		// closure they differ: the closure runs in its own frame whose
-		// caller is the panicking frame, so we consult caller. Using the
-		// threaded caller (rather than shared program state) keeps this
-		// per-goroutine — concurrent interpreted goroutines that panic
-		// must not observe each other's panic frame.
-		var target *frame
-		if fr.panicking {
-			target = fr
-		} else if caller != nil && caller.panicking {
-			target = caller
-		}
-		if target != nil && target.panicking {
-			v := target.panicVal
-			target.panicking = false
-			target.panicVal = nil
-			conv := value.DefaultConverter()
-			return conv.FromAny(v)
-		}
-		return value.MakeNil(), nil
-	case "real":
-		c := args[0].Complex()
-		return value.MakeFloat(real(c)), nil
-	case "imag":
-		c := args[0].Complex()
-		return value.MakeFloat(imag(c)), nil
-	case "complex":
-		return value.MakeComplex(args[0].Float(), args[1].Float()), nil
-	case "close":
-		rv, err := p.reflectOf(args[0], nil)
-		if err != nil {
-			return value.Value{}, err
-		}
-		rv.Close()
-		return value.MakeNil(), nil
+	if err := p.fillValues(fr, ssaArgs, args); err != nil {
+		return value.Value{}, err
 	}
-	return value.Value{}, fmt.Errorf("interp: builtin %s not supported", b.Name())
+	return p.executeBuiltin(fr, b, args)
 }
 
-func (p *program) runAlloc(fr *frame, instr *ssa.Alloc) (continuation, []value.Value, error) {
+func (p *program) runAlloc(fr *frame, instr *ssa.Alloc) error {
 	// Alloc produces a *T value. We model that by holding the *T's
 	// pointee as an addressable reflect.Value, and storing the pointer
 	// (via .Addr()) as this SSA value's runtime value. Subsequent
@@ -785,54 +683,46 @@ func (p *program) runAlloc(fr *frame, instr *ssa.Alloc) (continuation, []value.V
 	ptr := derefSSAType(instr.Type())
 	addr, err := p.makeAddressable(ptr)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	pointer := addr.Addr()
-	fr.bindCell(instr, reflectValue(pointer))
-	return contNext, nil, nil
+	fr.setValue(instr, reflectValue(pointer))
+	return nil
 }
 
-func (p *program) runStore(fr *frame, instr *ssa.Store) (continuation, []value.Value, error) {
+func (p *program) runStore(fr *frame, instr *ssa.Store) error {
 	val, err := p.readValue(fr, instr.Val)
 	if err != nil {
-		return contNext, nil, err
+		return err
 	}
 	switch addr := instr.Addr.(type) {
 	case *ssa.Global:
-		cell, ok := p.globals[addr]
+		p.globalsMu.Lock()
+		_, ok := p.globals[addr]
+		if ok {
+			p.globals[addr] = val
+		}
+		p.globalsMu.Unlock()
 		if !ok {
-			return contNext, nil, fmt.Errorf("interp: store to unknown global %s", addr.Name())
+			return fmt.Errorf("interp: store to unknown global %s", addr.Name())
 		}
-		cell.Value = val
-		return contNext, nil, nil
+		return nil
 	}
-	if ref, ok := fr.addrRef(instr.Addr); ok {
-		if ref.intSlice != nil {
-			ref.intSlice[ref.index] = int(val.Int())
-		} else if err := p.assignReflectValue(ref.elem, val); err != nil {
-			return contNext, nil, err
-		}
-		return contNext, nil, nil
-	}
-	cell, ok := fr.cell(instr.Addr)
+	stored, ok := fr.value(instr.Addr)
 	if !ok {
-		return contNext, nil,
-			fmt.Errorf("interp: %s: store to unknown address %T %s",
-				fr.fn.Name(), instr.Addr, instr.Addr.Name())
+		return fmt.Errorf(
+			"interp: %s: store to unknown address %T %s",
+			fr.fn.Name(), instr.Addr, instr.Addr.Name(),
+		)
 	}
-	// Two storage shapes:
-	//   - cell holds a reflect-pointer (from FieldAddr/IndexAddr/Alloc-with-composite):
-	//     deref and Set into the pointee.
-	//   - cell holds a plain value (Alloc of basic type): replace the
-	//     cell's Value.
-	if rv, ok := cell.Value.Reflect(); ok && rv.Kind() == reflect.Ptr && !rv.IsNil() {
+	if rv, ok := stored.Reflect(); ok && rv.Kind() == reflect.Ptr && !rv.IsNil() {
 		if err := p.assignReflectValue(rv.Elem(), val); err != nil {
-			return contNext, nil, err
+			return err
 		}
-		return contNext, nil, nil
+		return nil
 	}
-	cell.Value = val
-	return contNext, nil, nil
+	fr.setValue(instr.Addr, val)
+	return nil
 }
 
 func (p *program) assignReflectValue(dst reflect.Value, val value.Value) error {
@@ -909,8 +799,8 @@ func coerceReflectValue(src reflect.Value, dstType reflect.Type) (reflect.Value,
 	return reflect.Value{}, false, nil
 }
 
-// derefSSAType returns the pointee type of a *T SSA type. It is the SSA
-// equivalent of gofun's deref helper.
+// derefSSAType returns the pointee type of a *T SSA type, or the type
+// itself when it is not a pointer.
 func derefSSAType(t types.Type) types.Type {
 	if pt, ok := t.Underlying().(*types.Pointer); ok {
 		return pt.Elem()

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/t04dJ14n9/gig"
+	"github.com/t04dJ14n9/gig/importer"
 )
 
 type namedContextLoadFunc func(context.Context) (string, error)
@@ -15,7 +16,7 @@ func callNamedContextLoadFunc(ctx context.Context, f namedContextLoadFunc) (stri
 }
 
 func TestExternalNamedFuncLiteralWithContext(t *testing.T) {
-	pkg := gig.RegisterPackage("test/namedcontextloader", "namedcontextloader")
+	pkg := importer.RegisterPackage("test/namedcontextloader", "namedcontextloader")
 	pkg.AddFunction("Call", callNamedContextLoadFunc, "")
 
 	src := `package main

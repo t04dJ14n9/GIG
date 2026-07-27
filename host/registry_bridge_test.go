@@ -1,11 +1,399 @@
 package host
 
 import (
+	"io"
+	"reflect"
 	"testing"
 
 	"github.com/t04dJ14n9/gig/importer"
 	"github.com/t04dJ14n9/gig/value"
 )
+
+type registryBridgeRecord struct {
+	Value int
+}
+
+type countingRegistry struct {
+	*importer.Registry
+
+	packageLookups    int
+	legacyFuncLookups int
+}
+
+type legacyLookupRegistry struct {
+	*importer.Registry
+
+	function any
+	variable any
+	typ      reflect.Type
+}
+
+type variableFallbackRegistry struct {
+	*importer.Registry
+
+	variable      any
+	legacyVarHits int
+}
+
+func (r *variableFallbackRegistry) LookupExternalVar(pkgPath, name string) (any, bool) {
+	r.legacyVarHits++
+	if pkgPath != "example/variable-fallback" || name != "Mutable" {
+		return nil, false
+	}
+	return r.variable, true
+}
+
+func (r *legacyLookupRegistry) GetPackageByPath(string) *importer.ExternalPackage {
+	return nil
+}
+
+func (r *legacyLookupRegistry) GetPackageByName(string) *importer.ExternalPackage {
+	return nil
+}
+
+func (r *legacyLookupRegistry) LookupExternalFunc(pkgPath, name string) (any, bool) {
+	if pkgPath != "example/legacy" || name != "Value" {
+		return nil, false
+	}
+	return r.function, true
+}
+
+func (r *legacyLookupRegistry) LookupExternalVar(pkgPath, name string) (any, bool) {
+	if pkgPath != "example/legacy" || name != "Mutable" {
+		return nil, false
+	}
+	return r.variable, true
+}
+
+func (r *legacyLookupRegistry) LookupExternalTypeByName(pkgPath, name string) (reflect.Type, bool) {
+	if pkgPath != "example/legacy" || name != "Record" {
+		return nil, false
+	}
+	return r.typ, true
+}
+
+func (r *countingRegistry) GetPackageByPath(path string) *importer.ExternalPackage {
+	r.packageLookups++
+	return r.Registry.GetPackageByPath(path)
+}
+
+func (r *countingRegistry) LookupExternalFunc(pkgPath, name string) (any, bool) {
+	r.legacyFuncLookups++
+	return r.Registry.LookupExternalFunc(pkgPath, name)
+}
+
+func TestRegistryBridgeResolvesFunctionFromOneObjectLookup(t *testing.T) {
+	reg := &countingRegistry{Registry: importer.NewRegistry()}
+	pkg := reg.RegisterPackage("example/once", "once")
+	pkg.AddFunction("Value", func() int { return 7 }, "")
+	if _, ok := FromRegistry(reg).LookupFunc("example/once", "Value"); !ok {
+		t.Fatal("LookupFunc did not find Value")
+	}
+	if reg.packageLookups != 1 || reg.legacyFuncLookups != 0 {
+		t.Fatalf("package lookups=%d legacy function lookups=%d, want 1/0", reg.packageLookups, reg.legacyFuncLookups)
+	}
+}
+
+func TestRegistryBridgeFallsBackToLegacyTypedLookups(t *testing.T) {
+	registered := 11
+	recordType := reflect.TypeOf(registryBridgeRecord{})
+	reg := &legacyLookupRegistry{
+		Registry: importer.NewRegistry(),
+		function: func() int { return 7 },
+		variable: &registered,
+		typ:      recordType,
+	}
+	env := FromRegistry(reg)
+
+	t.Run("function", func(t *testing.T) {
+		fn, ok := env.LookupFunc("example/legacy", "Value")
+		if !ok {
+			t.Fatal("LookupFunc did not use the legacy typed lookup")
+		}
+		got, err := fn.Call(nil)
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		if len(got) != 1 || got[0].Int() != 7 {
+			t.Fatalf("Value = %v, want 7", got)
+		}
+	})
+
+	t.Run("variable", func(t *testing.T) {
+		variable, ok := env.LookupVar("example/legacy", "Mutable")
+		if !ok {
+			t.Fatal("LookupVar did not use the legacy typed lookup")
+		}
+		got, err := variable.Get()
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		ptr, ok := got.Interface().(*int)
+		if !ok || ptr != &registered {
+			t.Fatalf("Get returned %T %v, want registered pointer %p", got.Interface(), got.Interface(), &registered)
+		}
+	})
+
+	t.Run("type", func(t *testing.T) {
+		hostType, ok := env.LookupType("example/legacy", "Record")
+		if !ok {
+			t.Fatal("LookupType did not use the legacy typed lookup")
+		}
+		if got := hostType.ReflectType(); got != recordType {
+			t.Fatalf("ReflectType = %v, want %v", got, recordType)
+		}
+	})
+}
+
+func TestRegistryBridgeFunctionFallsBackToReflect(t *testing.T) {
+	reg := importer.NewRegistry()
+	pkg := reg.RegisterPackage("example/reflect", "reflectpkg")
+	pkg.AddFunction("Add", func(a, b int) int { return a + b }, "")
+
+	fn, ok := FromRegistry(reg).LookupFunc("example/reflect", "Add")
+	if !ok {
+		t.Fatal("LookupFunc did not find Add")
+	}
+	got, err := fn.Call([]value.Value{value.MakeInt(2), value.MakeInt(5)})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if len(got) != 1 || got[0].Int() != 7 {
+		t.Fatalf("Add = %v, want 7", got)
+	}
+}
+
+func TestRegistryBridgeLookupFuncRejectsNonFunctionObject(t *testing.T) {
+	reg := importer.NewRegistry()
+	pkg := reg.RegisterPackage("example/kinds", "kinds")
+	x := 1
+	pkg.AddVariable("X", &x, "")
+
+	if _, ok := FromRegistry(reg).LookupFunc("example/kinds", "X"); ok {
+		t.Fatal("LookupFunc accepted a variable object")
+	}
+}
+
+func TestRegistryBridgeLookupsRejectMissingObjects(t *testing.T) {
+	reg := importer.NewRegistry()
+	reg.RegisterPackage("example/present", "present")
+	env := FromRegistry(reg)
+
+	lookups := []struct {
+		name   string
+		lookup func(string, string) bool
+	}{
+		{name: "function", lookup: func(path, name string) bool {
+			_, ok := env.LookupFunc(path, name)
+			return ok
+		}},
+		{name: "variable", lookup: func(path, name string) bool {
+			_, ok := env.LookupVar(path, name)
+			return ok
+		}},
+		{name: "constant", lookup: func(path, name string) bool {
+			_, ok := env.LookupConst(path, name)
+			return ok
+		}},
+		{name: "type", lookup: func(path, name string) bool {
+			_, ok := env.LookupType(path, name)
+			return ok
+		}},
+	}
+
+	for _, tc := range lookups {
+		t.Run(tc.name+"/missing_package", func(t *testing.T) {
+			if tc.lookup("example/missing", "Missing") {
+				t.Fatalf("%s lookup found an object in a missing package", tc.name)
+			}
+		})
+		t.Run(tc.name+"/missing_name", func(t *testing.T) {
+			if tc.lookup("example/present", "Missing") {
+				t.Fatalf("%s lookup found a missing object", tc.name)
+			}
+		})
+	}
+}
+
+func TestRegistryBridgeVariableAdapter(t *testing.T) {
+	reg := importer.NewRegistry()
+	pkg := reg.RegisterPackage("example/objects", "objects")
+	registered := 11
+	pkg.AddVariable("Mutable", &registered, "")
+
+	variable, ok := FromRegistry(reg).LookupVar("example/objects", "Mutable")
+	if !ok {
+		t.Fatal("LookupVar did not find Mutable")
+	}
+	if variable.Name() != "Mutable" {
+		t.Fatalf("Name = %q, want Mutable", variable.Name())
+	}
+	got, err := variable.Get()
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	ptr, ok := got.Interface().(*int)
+	if !ok {
+		t.Fatalf("Get returned %T, want *int", got.Interface())
+	}
+	if ptr != &registered || *ptr != 11 {
+		t.Fatalf("Get returned %p -> %d, want registered address %p -> 11", ptr, *ptr, &registered)
+	}
+	if err := variable.Set(value.MakeInt(29)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if registered != 29 {
+		t.Fatalf("registered value = %d after Set, want 29", registered)
+	}
+}
+
+func TestRegistryBridgeLookupVarFallsBackFromMalformedObjectStorage(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		malformed any
+	}{
+		{name: "non-pointer", malformed: 11},
+		{name: "nil pointer", malformed: (*int)(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fallbackStorage := 17
+			reg := &variableFallbackRegistry{
+				Registry: importer.NewRegistry(),
+				variable: &fallbackStorage,
+			}
+			pkg := reg.RegisterPackage("example/variable-fallback", "variablefallback")
+			objectStorage := 11
+			pkg.AddVariable("Mutable", &objectStorage, "")
+			pkg.Objects["Mutable"].Name = "MalformedObjectName"
+			pkg.Objects["Mutable"].Value = tc.malformed
+
+			variable, ok := FromRegistry(reg).LookupVar("example/variable-fallback", "Mutable")
+			if !ok {
+				t.Fatal("LookupVar did not use the valid legacy storage")
+			}
+			if variable.Name() != "Mutable" {
+				t.Fatalf("Name = %q, want requested legacy name Mutable", variable.Name())
+			}
+			if reg.legacyVarHits != 1 {
+				t.Fatalf("legacy variable lookups = %d, want 1", reg.legacyVarHits)
+			}
+			got, err := variable.Get()
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			ptr, ok := got.Interface().(*int)
+			if !ok || ptr != &fallbackStorage || *ptr != 17 {
+				t.Fatalf("Get returned %T %v, want fallback pointer %p", got.Interface(), got.Interface(), &fallbackStorage)
+			}
+			if err := variable.Set(value.MakeInt(29)); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			if fallbackStorage != 29 {
+				t.Fatalf("fallback storage = %d after Set, want 29", fallbackStorage)
+			}
+			if objectStorage != 11 {
+				t.Fatalf("malformed object storage changed to %d", objectStorage)
+			}
+		})
+	}
+}
+
+func TestRegistryBridgeLookupVarRejectsUnusableObjectAndLegacyStorage(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		malformed any
+	}{
+		{name: "non-pointer", malformed: 17},
+		{name: "nil pointer", malformed: (*int)(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := &variableFallbackRegistry{
+				Registry: importer.NewRegistry(),
+				variable: tc.malformed,
+			}
+			pkg := reg.RegisterPackage("example/variable-fallback", "variablefallback")
+			objectStorage := 11
+			pkg.AddVariable("Mutable", &objectStorage, "")
+			pkg.Objects["Mutable"].Value = tc.malformed
+
+			if variable, ok := FromRegistry(reg).LookupVar("example/variable-fallback", "Mutable"); ok {
+				t.Fatalf("LookupVar returned unusable variable %#v", variable)
+			}
+			if reg.legacyVarHits != 1 {
+				t.Fatalf("legacy variable lookups = %d, want 1", reg.legacyVarHits)
+			}
+		})
+	}
+}
+
+func TestRegistryBridgeConstantAdapter(t *testing.T) {
+	reg := importer.NewRegistry()
+	pkg := reg.RegisterPackage("example/objects", "objects")
+	pkg.AddConstant("Answer", 42, "")
+
+	constant, ok := FromRegistry(reg).LookupConst("example/objects", "Answer")
+	if !ok {
+		t.Fatal("LookupConst did not find Answer")
+	}
+	if constant.Name() != "Answer" {
+		t.Fatalf("Name = %q, want Answer", constant.Name())
+	}
+	if got := constant.Value().Interface(); got != int(42) {
+		t.Fatalf("Value = %v (%T), want 42 (int)", got, got)
+	}
+}
+
+func TestRegistryBridgeTypeAdapters(t *testing.T) {
+	reg := importer.NewRegistry()
+	pkg := reg.RegisterPackage("example/types", "typespkg")
+	recordType := reflect.TypeOf(registryBridgeRecord{})
+	readerType := reflect.TypeOf((*io.Reader)(nil)).Elem()
+	pkg.AddType("registryBridgeRecord", recordType, "")
+	pkg.AddType("Reader", readerType, "")
+
+	if pkg.Objects["Reader"].Value != nil {
+		t.Fatalf("registered Reader zero value = %v, want nil interface value", pkg.Objects["Reader"].Value)
+	}
+
+	env := FromRegistry(reg)
+	imported, err := env.Import("example/types")
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		want reflect.Type
+	}{
+		{name: "registryBridgeRecord", want: recordType},
+		{name: "Reader", want: readerType},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hostType, ok := env.LookupType("example/types", tc.name)
+			if !ok {
+				t.Fatalf("LookupType did not find %s", tc.name)
+			}
+			if hostType.Name() != tc.name {
+				t.Fatalf("Name = %q, want %q", hostType.Name(), tc.name)
+			}
+			if got := hostType.ReflectType(); got != tc.want {
+				t.Fatalf("ReflectType = %v, want exact type %v", got, tc.want)
+			}
+
+			obj := imported.Scope().Lookup(tc.name)
+			if obj == nil {
+				t.Fatalf("imported package has no %s type", tc.name)
+			}
+			got, ok := env.LookupReflectType(obj.Type())
+			if !ok {
+				t.Fatalf("LookupReflectType did not resolve imported %s type", tc.name)
+			}
+			if got != tc.want {
+				t.Fatalf("LookupReflectType = %v, want exact type %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestRegistryBridgeUsesFunctionDirectCall(t *testing.T) {
 	reg := importer.NewRegistry()

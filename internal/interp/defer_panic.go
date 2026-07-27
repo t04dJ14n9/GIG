@@ -136,7 +136,8 @@ func (p *program) runDeferRec(fr *frame, rec *deferRecord, depth int) error {
 	if rv.Kind() != reflect.Func {
 		return fmt.Errorf("interp: defer target not callable")
 	}
-	rargs, err := p.reflectArgs(rv.Type(), rec.args)
+	args := bindHostCallbackDepth(fr.ctx, rec.args, depth+1)
+	rargs, err := p.reflectArgs(rv.Type(), args)
 	if err != nil {
 		return err
 	}

@@ -267,6 +267,12 @@ gig gen ./mydep
 gig --help
 ```
 
+Run `gig gen` with the minimum Go toolchain declared by the target module and
+from that module's directory. The generator reflects over the active
+toolchain and resolves third-party imports from the current module; using a
+newer Go release can emit wrappers that no longer compile at the supported
+minimum version.
+
 ## Architecture
 
 Gig uses a direct SSA interpreter.

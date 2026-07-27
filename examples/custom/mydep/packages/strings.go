@@ -27,8 +27,6 @@ func init() {
 	pkg.AddFunction("EqualFold", strings.EqualFold, "", directCallStringsEqualFold)
 	pkg.AddFunction("Fields", strings.Fields, "", directCallStringsFields)
 	pkg.AddFunction("FieldsFunc", strings.FieldsFunc, "", directCallStringsFieldsFunc)
-	pkg.AddFunction("FieldsFuncSeq", strings.FieldsFuncSeq, "", directCallStringsFieldsFuncSeq)
-	pkg.AddFunction("FieldsSeq", strings.FieldsSeq, "", directCallStringsFieldsSeq)
 	pkg.AddFunction("HasPrefix", strings.HasPrefix, "", directCallStringsHasPrefix)
 	pkg.AddFunction("HasSuffix", strings.HasSuffix, "", directCallStringsHasSuffix)
 	pkg.AddFunction("Index", strings.Index, "", directCallStringsIndex)
@@ -41,7 +39,6 @@ func init() {
 	pkg.AddFunction("LastIndexAny", strings.LastIndexAny, "", directCallStringsLastIndexAny)
 	pkg.AddFunction("LastIndexByte", strings.LastIndexByte, "", directCallStringsLastIndexByte)
 	pkg.AddFunction("LastIndexFunc", strings.LastIndexFunc, "", directCallStringsLastIndexFunc)
-	pkg.AddFunction("Lines", strings.Lines, "", directCallStringsLines)
 	pkg.AddFunction("Map", strings.Map, "", directCallStringsMap)
 	pkg.AddFunction("NewReader", strings.NewReader, "", directCallStringsNewReader)
 	pkg.AddFunction("NewReplacer", strings.NewReplacer, "", directCallStringsNewReplacer)
@@ -51,9 +48,7 @@ func init() {
 	pkg.AddFunction("Split", strings.Split, "", directCallStringsSplit)
 	pkg.AddFunction("SplitAfter", strings.SplitAfter, "", directCallStringsSplitAfter)
 	pkg.AddFunction("SplitAfterN", strings.SplitAfterN, "", directCallStringsSplitAfterN)
-	pkg.AddFunction("SplitAfterSeq", strings.SplitAfterSeq, "", directCallStringsSplitAfterSeq)
 	pkg.AddFunction("SplitN", strings.SplitN, "", directCallStringsSplitN)
-	pkg.AddFunction("SplitSeq", strings.SplitSeq, "", directCallStringsSplitSeq)
 	pkg.AddFunction("Title", strings.Title, "", directCallStringsTitle)
 	pkg.AddFunction("ToLower", strings.ToLower, "", directCallStringsToLower)
 	pkg.AddFunction("ToLowerSpecial", strings.ToLowerSpecial, "", directCallStringsToLowerSpecial)
@@ -348,34 +343,6 @@ func directCallStringsFieldsFunc(args []value.Value) ([]value.Value, error) {
 	return directResultsStrings(r0)
 }
 
-func directCallStringsFieldsFuncSeq(args []value.Value) ([]value.Value, error) {
-	if len(args) != 2 {
-		return nil, fmt.Errorf("arg count %d != 2", len(args))
-	}
-	a0, err := directArgStrings[string](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	a1, err := directArgStrings[func(rune) bool](args[1])
-	if err != nil {
-		return nil, fmt.Errorf("arg 1: %w", err)
-	}
-	r0 := strings.FieldsFuncSeq(a0, a1)
-	return directResultsStrings(r0)
-}
-
-func directCallStringsFieldsSeq(args []value.Value) ([]value.Value, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("arg count %d != 1", len(args))
-	}
-	a0, err := directArgStrings[string](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	r0 := strings.FieldsSeq(a0)
-	return directResultsStrings(r0)
-}
-
 func directCallStringsHasPrefix(args []value.Value) ([]value.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("arg count %d != 2", len(args))
@@ -568,18 +535,6 @@ func directCallStringsLastIndexFunc(args []value.Value) ([]value.Value, error) {
 	return directResultsStrings(r0)
 }
 
-func directCallStringsLines(args []value.Value) ([]value.Value, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("arg count %d != 1", len(args))
-	}
-	a0, err := directArgStrings[string](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	r0 := strings.Lines(a0)
-	return directResultsStrings(r0)
-}
-
 func directCallStringsMap(args []value.Value) ([]value.Value, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("arg count %d != 2", len(args))
@@ -732,22 +687,6 @@ func directCallStringsSplitAfterN(args []value.Value) ([]value.Value, error) {
 	return directResultsStrings(r0)
 }
 
-func directCallStringsSplitAfterSeq(args []value.Value) ([]value.Value, error) {
-	if len(args) != 2 {
-		return nil, fmt.Errorf("arg count %d != 2", len(args))
-	}
-	a0, err := directArgStrings[string](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	a1, err := directArgStrings[string](args[1])
-	if err != nil {
-		return nil, fmt.Errorf("arg 1: %w", err)
-	}
-	r0 := strings.SplitAfterSeq(a0, a1)
-	return directResultsStrings(r0)
-}
-
 func directCallStringsSplitN(args []value.Value) ([]value.Value, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("arg count %d != 3", len(args))
@@ -765,22 +704,6 @@ func directCallStringsSplitN(args []value.Value) ([]value.Value, error) {
 		return nil, fmt.Errorf("arg 2: %w", err)
 	}
 	r0 := strings.SplitN(a0, a1, a2)
-	return directResultsStrings(r0)
-}
-
-func directCallStringsSplitSeq(args []value.Value) ([]value.Value, error) {
-	if len(args) != 2 {
-		return nil, fmt.Errorf("arg count %d != 2", len(args))
-	}
-	a0, err := directArgStrings[string](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	a1, err := directArgStrings[string](args[1])
-	if err != nil {
-		return nil, fmt.Errorf("arg 1: %w", err)
-	}
-	r0 := strings.SplitSeq(a0, a1)
 	return directResultsStrings(r0)
 }
 

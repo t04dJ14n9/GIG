@@ -19,7 +19,6 @@ func init() {
 	pkg.AddFunction("ConstantTimeEq", crypto_subtle.ConstantTimeEq, "", directCallCryptoSubtleConstantTimeEq)
 	pkg.AddFunction("ConstantTimeLessOrEq", crypto_subtle.ConstantTimeLessOrEq, "", directCallCryptoSubtleConstantTimeLessOrEq)
 	pkg.AddFunction("ConstantTimeSelect", crypto_subtle.ConstantTimeSelect, "", directCallCryptoSubtleConstantTimeSelect)
-	pkg.AddFunction("WithDataIndependentTiming", crypto_subtle.WithDataIndependentTiming, "", directCallCryptoSubtleWithDataIndependentTiming)
 	pkg.AddFunction("XORBytes", crypto_subtle.XORBytes, "", directCallCryptoSubtleXORBytes)
 
 }
@@ -195,18 +194,6 @@ func directCallCryptoSubtleConstantTimeSelect(args []value.Value) ([]value.Value
 	}
 	r0 := crypto_subtle.ConstantTimeSelect(a0, a1, a2)
 	return directResultsCryptoSubtle(r0)
-}
-
-func directCallCryptoSubtleWithDataIndependentTiming(args []value.Value) ([]value.Value, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("arg count %d != 1", len(args))
-	}
-	a0, err := directArgCryptoSubtle[func()](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	crypto_subtle.WithDataIndependentTiming(a0)
-	return nil, nil
 }
 
 func directCallCryptoSubtleXORBytes(args []value.Value) ([]value.Value, error) {

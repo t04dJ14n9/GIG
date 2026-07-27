@@ -97,7 +97,7 @@ func (p *program) callHostFunc(ctx context.Context, caller *frame, fn *ssa.Funct
 		}
 		return nil, fmt.Errorf("interp: host function %s.%s not found", pkgPath, fn.Name())
 	}
-	return callResolvedHostFunc(hf, args)
+	return callResolvedHostFunc(hf, bindHostCallbackDepth(ctx, args, depth))
 }
 
 func (p *program) lookupHostFunc(fn *ssa.Function, pkgPath string) (host.Function, bool) {
@@ -143,7 +143,8 @@ func (p *program) tryInvokeMethodOn(ctx context.Context, caller *frame, receiver
 	dispatch := methodDispatchResult{receiverType: rv.Type()}
 	if hm, ok := p.lookupHostMethod(rv, method); ok {
 		dispatch.found = true
-		dispatch.results, err = callResolvedHostMethod(hm, dynRecv, args)
+		boundArgs := bindHostCallbackDepth(ctx, args, depth)
+		dispatch.results, err = callResolvedHostMethod(hm, dynRecv, boundArgs)
 		return dispatch, err
 	}
 	if fn := p.lookupInterpretedMethod(dynRecv, method); fn != nil {
@@ -175,7 +176,8 @@ func (p *program) tryInvokeMethodOn(ctx context.Context, caller *frame, receiver
 	}
 	dispatch.found = true
 	mt := m.Type()
-	rargs, err := p.reflectArgs(mt, args)
+	boundArgs := bindHostCallbackDepth(ctx, args, depth)
+	rargs, err := p.reflectArgs(mt, boundArgs)
 	if err != nil {
 		return dispatch, fmt.Errorf("interp: method %s %w", method, err)
 	}

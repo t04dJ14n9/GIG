@@ -615,6 +615,7 @@ func (p *program) runIndirectCall(fr *frame, instr *ssa.Call, common *ssa.CallCo
 	if err != nil {
 		return err
 	}
+	args = bindHostCallbackDepth(fr.ctx, args, depth+1)
 	rargs, err := p.reflectArgs(rv.Type(), args)
 	if err != nil {
 		return err

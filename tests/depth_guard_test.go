@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/t04dJ14n9/gig"
+	"github.com/t04dJ14n9/gig/importer"
 )
 
 // The interpreter bounds recursion with a call-depth cap so runaway
@@ -13,13 +14,13 @@ import (
 // must hold on every path that re-enters interpreted code, not just
 // direct static calls.
 
-func runExpectingDepthError(t *testing.T, src, entry string) {
+func runExpectingDepthError(t *testing.T, src string, opts ...gig.BuildOption) {
 	t.Helper()
-	prog, err := gig.Build(src)
+	prog, err := gig.Build(src, opts...)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	_, err = prog.Run(entry)
+	_, err = prog.Run("Main")
 	if err == nil {
 		t.Fatal("Run succeeded, want max call depth error")
 	}
@@ -32,7 +33,7 @@ func TestDepthGuardDirectRecursion(t *testing.T) {
 	runExpectingDepthError(t, `
 func Rec(n int) int { return Rec(n + 1) }
 func Main() int { return Rec(0) }
-`, "Main")
+`)
 }
 
 // Recursion through an interface method used to bypass the guard: the
@@ -50,7 +51,7 @@ func Main() int {
 	var l Looper = impl{}
 	return l.Loop(0)
 }
-`, "Main")
+`)
 }
 
 // Deferred calls also re-enter interpreted code; a defer chain that
@@ -62,5 +63,31 @@ func Rec(n int) int {
 	return n
 }
 func Main() int { return Rec(0) }
-`, "Main")
+`)
+}
+
+// A synchronous host callback crosses reflect.MakeFunc before re-entering
+// interpreted code. That wrapper must preserve the active call depth instead
+// of treating every callback invocation as a new top-level execution.
+func TestDepthGuardHostCallbackRecursion(t *testing.T) {
+	registry := importer.NewRegistry()
+	registry.RegisterPackage("example/callback", "callback").AddFunction(
+		"Call",
+		func(fn func() int) int { return fn() },
+		"",
+	)
+	runExpectingDepthError(t, `
+package main
+
+import "example/callback"
+
+func Rec(n int) int {
+	if n == 1050 {
+		return n
+	}
+	return callback.Call(func() int { return Rec(n + 1) })
+}
+
+func Main() int { return Rec(0) }
+`, gig.WithRegistry(registry))
 }

@@ -20,7 +20,6 @@ func init() {
 	pkg.AddFunction("NewCTR", crypto_cipher.NewCTR, "", directCallCryptoCipherNewCTR)
 	pkg.AddFunction("NewGCM", crypto_cipher.NewGCM, "", directCallCryptoCipherNewGCM)
 	pkg.AddFunction("NewGCMWithNonceSize", crypto_cipher.NewGCMWithNonceSize, "", directCallCryptoCipherNewGCMWithNonceSize)
-	pkg.AddFunction("NewGCMWithRandomNonce", crypto_cipher.NewGCMWithRandomNonce, "", directCallCryptoCipherNewGCMWithRandomNonce)
 	pkg.AddFunction("NewGCMWithTagSize", crypto_cipher.NewGCMWithTagSize, "", directCallCryptoCipherNewGCMWithTagSize)
 	pkg.AddFunction("NewOFB", crypto_cipher.NewOFB, "", directCallCryptoCipherNewOFB)
 
@@ -208,18 +207,6 @@ func directCallCryptoCipherNewGCMWithNonceSize(args []value.Value) ([]value.Valu
 		return nil, fmt.Errorf("arg 1: %w", err)
 	}
 	r0, r1 := crypto_cipher.NewGCMWithNonceSize(a0, a1)
-	return directResultsCryptoCipher(r0, r1)
-}
-
-func directCallCryptoCipherNewGCMWithRandomNonce(args []value.Value) ([]value.Value, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("arg count %d != 1", len(args))
-	}
-	a0, err := directArgCryptoCipher[crypto_cipher.Block](args[0])
-	if err != nil {
-		return nil, fmt.Errorf("arg 0: %w", err)
-	}
-	r0, r1 := crypto_cipher.NewGCMWithRandomNonce(a0)
 	return directResultsCryptoCipher(r0, r1)
 }
 

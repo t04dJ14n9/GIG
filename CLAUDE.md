@@ -50,8 +50,11 @@ go run ./cmd/ssa-study        # http://127.0.0.1:8080
 # MUST be go1.23.1 — gen reflects over the running toolchain's stdlib,
 # so a newer toolchain emits wrappers for symbols absent from go1.23
 # (e.g. bytes.FieldsSeq, net/http.CrossOriginProtection).
-go1.23.1 run ./cmd/gig gen <dir>
-go1.23.1 run ./cmd/gig init -package <name>
+# Build from the nested CLI module, then run the binary from the module
+# whose dependencies are being generated so third-party imports resolve.
+(cd cmd/gig && go1.23.1 build -o /tmp/gig .)
+/tmp/gig gen ./stdlib
+(cd examples/custom && /tmp/gig gen ./mydep)
 ```
 
 CI matrix builds the root module on Go 1.23–1.26, so avoid post-1.23 stdlib APIs in library code.

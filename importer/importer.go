@@ -14,8 +14,8 @@ import (
 
 // Importer implements types.Importer for registered external packages.
 //
-// It is used during parsing/type-checking, not during VM execution. Runtime
-// external calls use metadata copied into bytecode.CompiledProgram.
+// It is used during parsing/type-checking. Runtime external calls are
+// dispatched through the host.Environment bridge, not through this importer.
 type Importer struct {
 	// reg is the package registry to use for resolution.
 	reg PackageRegistry

@@ -301,8 +301,8 @@ func (fr *frame) materializeSlot(idx int) {
 // function's result tuple (zero, one, or many). depth is the current
 // call depth, bumped on every entry to catch runaway recursion.
 //
-// caller is used for diagnostics and recover() once defer/panic land.
-// freeVars is for closures (Phase 6.3); pass nil for plain functions.
+// caller is used for diagnostics and recover().
+// freeVars is for closures; pass nil for plain functions.
 func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, args []value.Value, freeVars []*Cell, depth int) (results []value.Value, err error) {
 	if ctx == nil {
 		ctx = context.Background()

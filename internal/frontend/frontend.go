@@ -1,7 +1,6 @@
 // Package frontend turns Go source into SSA. It owns parse, type-check,
 // validation (banned imports, panic policy), auto-package insertion,
-// and SSA construction. It produces no bytecode; that part of the
-// legacy compiler is removed in Phase 4 of docs/PLAN.md.
+// and SSA construction. It produces no bytecode.
 package frontend
 
 import (

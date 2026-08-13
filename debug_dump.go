@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -53,7 +52,6 @@ func DebugDump(sourceCode string, opts ...BuildOption) (string, error) {
 			b.WriteString("\n")
 		}
 	}
-	_ = os.Stderr // kept to match the legacy signature of accepting error sinks
 	return b.String(), nil
 }
 
@@ -74,8 +72,7 @@ func memberFunc(m any) (func(*strings.Builder) (int64, error), bool) {
 }
 
 // builderWriter adapts strings.Builder to io.Writer via the duck-typed
-// interface memberFunc uses. We avoid importing io to keep this file
-// dependency-free.
+// interface memberFunc uses.
 type builderWriter struct{ b *strings.Builder }
 
 func (w builderWriter) Write(p []byte) (int, error) { return w.b.Write(p) }

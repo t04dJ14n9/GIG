@@ -1,8 +1,8 @@
 // ops.go is the instruction dispatcher. It pattern-matches on
-// ssa.Instruction concrete types and routes each one to a small
-// handler. Phase 6 vertical slice covers scalar arithmetic, control
-// flow, function calls, and Alloc/Store. Composite types, closures,
-// host calls, defer/panic/recover, and concurrency follow in 6.2+.
+// ssa.Instruction concrete types and routes each one to a small handler
+// covering scalar arithmetic, control flow, function calls, Alloc/Store,
+// composite types, closures, host calls, defer/panic/recover, and
+// concurrency.
 package interp
 
 import (

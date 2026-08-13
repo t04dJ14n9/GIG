@@ -26,7 +26,6 @@ import (
 type deferRecord struct {
 	fn   value.Value   // function value (possibly a closure)
 	args []value.Value // snapshot of args
-	pos  string        // for diagnostics
 	// For builtins (close, recover, etc) we keep the SSA op around.
 	builtin *ssa.Builtin
 	// fnSSA: when the call target is *ssa.Function we can call it

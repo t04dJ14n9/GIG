@@ -102,21 +102,7 @@ func (p *program) reflectOf(v value.Value, hint reflect.Type) (reflect.Value, er
 	return rv, nil
 }
 
-// reflectFromCellValue returns the reflect.Value backing the cell. If
-// the cell already holds a reflect-kind value, return it; otherwise
-// build one out of the value via the converter.
-func (p *program) reflectFromCellValue(c *Cell) (reflect.Value, error) {
-	if rv, ok := c.Value.Reflect(); ok {
-		return rv, nil
-	}
-	rt, err := p.resolver.ResolveType(c.Type)
-	if err != nil {
-		return reflect.Value{}, err
-	}
-	return p.converter.ToReflect(c.Value, rt)
-}
-
-// composeReflectValue wraps an addressable reflect.Value as a Value.
+// reflectValue wraps an addressable reflect.Value as a Value.
 func reflectValue(rv reflect.Value) value.Value {
 	conv := value.DefaultConverter()
 	v, _ := conv.FromReflect(rv)

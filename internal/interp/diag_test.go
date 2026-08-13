@@ -2,7 +2,6 @@ package interp
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/t04dJ14n9/gig/internal/frontend"
@@ -104,28 +103,5 @@ func PointerSwap() int {
 	}
 	if results[0].Int() != 21 {
 		t.Fatalf("expected 21, got %d", results[0].Int())
-	}
-}
-
-// runDiagProgram is a noisier variant that captures the panic.
-func runDiagProgram(t *testing.T, src, fn string) {
-	t.Helper()
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	prog, err := NewEngine().NewProgram(ctx, unit, stubEnv{}, Config{})
-	if err != nil {
-		t.Fatalf("NewProgram: %v", err)
-	}
-	defer func() {
-		if re := recover(); re != nil {
-			t.Fatalf("panic: %v", re)
-		}
-	}()
-	_, err = prog.Call(ctx, fn, nil)
-	if err != nil && strings.Contains(err.Error(), "Field index out of range") {
-		t.Fatalf("hit Field-out-of-range: %v", err)
 	}
 }

@@ -76,7 +76,7 @@ type program struct {
 	maxDepth    int
 	hostFuncs   sync.Map // map[*ssa.Function]host.Function
 	hostMethods sync.Map // map[hostMethodCacheKey]host.Method or missingHostMethod
-	layouts     sync.Map // map[*ssa.Function]*frameLayout
+	layouts     sync.Map // map[*ssa.Function]map[ssa.Value]int
 }
 
 // Call resolves the named function and runs it with the given args.

@@ -53,21 +53,16 @@ type frame struct {
 	cancelTicks int
 }
 
-type frameLayout struct {
-	// index maps every slotted SSA value in fn to its offset in frame.slots.
-	// It is built once per *ssa.Function and reused by every call frame.
-	index map[ssa.Value]int
-}
-
-func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
+// frameLayout returns the slot index for fn: a map from every slotted SSA
+// value (params, free variables, and each value-producing instruction,
+// including Alloc) to its offset in frame.slots. Constants and globals are
+// resolved directly by readValue, so they need no frame storage. The index is
+// built once per *ssa.Function and cached.
+func (p *program) frameLayout(fn *ssa.Function) map[ssa.Value]int {
 	if cached, ok := p.layouts.Load(fn); ok {
-		return cached.(*frameLayout)
+		return cached.(map[ssa.Value]int)
 	}
 
-	// Assign deterministic slot indexes for every value local to this
-	// function: params, free variables, and each value-producing instruction
-	// (including Alloc). Constants and globals are resolved directly by
-	// readValue, so they do not need frame storage.
 	index := make(map[ssa.Value]int)
 	add := func(v ssa.Value) {
 		if v == nil {
@@ -91,9 +86,8 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 			}
 		}
 	}
-	layout := &frameLayout{index: index}
-	actual, _ := p.layouts.LoadOrStore(fn, layout)
-	return actual.(*frameLayout)
+	actual, _ := p.layouts.LoadOrStore(fn, index)
+	return actual.(map[ssa.Value]int)
 }
 
 func (fr *frame) cell(v ssa.Value) (*Cell, bool) {
@@ -227,18 +221,15 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 }
 
 func (p *program) newFrame(fn *ssa.Function, freeVars []*Cell) *frame {
-	layout := p.frameLayout(fn)
-	return p.newFrameWithLayout(fn, freeVars, layout)
-}
-
-func (p *program) newFrameWithLayout(fn *ssa.Function, freeVars []*Cell, layout *frameLayout) *frame {
-	// The layout is shared, but slots are per-call. A recursive call to the
-	// same function gets a different frame with the same slotIndex mapping.
+	// The slot index is shared across calls; slots are per-call, so a
+	// recursive call to the same function gets a fresh frame reusing the same
+	// index mapping.
+	index := p.frameLayout(fn)
 	return &frame{
 		fn:        fn,
 		block:     fn.Blocks[0],
-		slots:     make([]Cell, len(layout.index)),
-		slotIndex: layout.index,
+		slots:     make([]Cell, len(index)),
+		slotIndex: index,
 		freeVars:  freeVars,
 	}
 }

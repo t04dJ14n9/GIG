@@ -314,69 +314,6 @@ func indexAddrRefEligible(v ssa.Value) bool {
 	return true
 }
 
-func fusableIndexAddrConsumer(indexAddr *ssa.IndexAddr, consumer ssa.Instruction) bool {
-	if indexAddr == nil || consumer == nil {
-		return false
-	}
-	switch instr := consumer.(type) {
-	case *ssa.Store:
-		if instr.Addr != indexAddr {
-			return false
-		}
-	case *ssa.UnOp:
-		if instr.Op != token.MUL || instr.X != indexAddr {
-			return false
-		}
-	default:
-		return false
-	}
-	refs := indexAddr.Referrers()
-	if refs == nil || len(*refs) == 0 {
-		return false
-	}
-	found := false
-	for _, ref := range *refs {
-		if ref == consumer {
-			found = true
-			continue
-		}
-		if _, ok := ref.(*ssa.DebugRef); ok {
-			continue
-		}
-		return false
-	}
-	return found
-}
-
-func (p *program) tryRunFusedIndexAddr(fr *frame, indexAddr *ssa.IndexAddr, consumer ssa.Instruction) (bool, error) {
-	x, err := p.readValue(fr, indexAddr.X)
-	if err != nil {
-		return true, err
-	}
-	s, ok := x.IntSlice()
-	if !ok {
-		return false, nil
-	}
-	idxV, err := p.readValue(fr, indexAddr.Index)
-	if err != nil {
-		return true, err
-	}
-	idx := int(idxV.Int())
-	switch instr := consumer.(type) {
-	case *ssa.UnOp:
-		fr.setCell(instr, value.MakeInt(int64(s[idx])))
-		return true, nil
-	case *ssa.Store:
-		val, err := p.readValue(fr, instr.Val)
-		if err != nil {
-			return true, err
-		}
-		s[idx] = int(val.Int())
-		return true, nil
-	}
-	return false, nil
-}
-
 func isPlainIntSliceType(t types.Type) bool {
 	s, ok := t.Underlying().(*types.Slice)
 	if !ok {

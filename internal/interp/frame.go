@@ -38,14 +38,12 @@ type frame struct {
 	// the ssa.Value object identity, not Value.Name(), because SSA names are
 	// only diagnostic and are not guaranteed to be unique.
 	slots     []Cell
-	slotKinds []fastSlotKind
 	slotIndex map[ssa.Value]int
 
 	addrRefs map[ssa.Value]addrRef
 
-	blockPlans []*blockPlan
-	freeVars   []*Cell
-	iters      map[ssa.Value]*rangeIter
+	freeVars []*Cell
+	iters    map[ssa.Value]*rangeIter
 
 	// defer / panic / recover state.
 	defers    []*deferRecord
@@ -58,22 +56,7 @@ type frame struct {
 type frameLayout struct {
 	// index maps every slotted SSA value in fn to its offset in frame.slots.
 	// It is built once per *ssa.Function and reused by every call frame.
-	index     map[ssa.Value]int
-	slotKinds []fastSlotKind
-
-	// The remaining fields are precompiled execution hints. They do not
-	// change semantics; runFrame falls back to visitInstr whenever a fast path
-	// is not applicable.
-	fusedIndexAddr map[*ssa.IndexAddr]ssa.Instruction
-	blockPlans     []*blockPlan
-}
-
-type blockPlan struct {
-	fusedIndexAddrConsumers []ssa.Instruction
-	fastPhis                []fastPhi
-	fastBlockOps            []fastInstr
-	fastInstrs              []fastInstr
-	fastIndexAddrs          []fastIndexAddr
+	index map[ssa.Value]int
 }
 
 func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
@@ -81,9 +64,10 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 		return cached.(*frameLayout)
 	}
 
-	// Assign deterministic slot indexes for values that are local to this
-	// function. Constants and globals are resolved directly by readValue, so
-	// they do not need frame storage.
+	// Assign deterministic slot indexes for every value local to this
+	// function: params, free variables, and each value-producing instruction
+	// (including Alloc). Constants and globals are resolved directly by
+	// readValue, so they do not need frame storage.
 	index := make(map[ssa.Value]int)
 	add := func(v ssa.Value) {
 		if v == nil {
@@ -102,88 +86,12 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 	}
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			// Every value-producing instruction gets a slot, including Alloc.
-			// Re-executing an Alloc (e.g. in a loop) still allocates a fresh
-			// addressable object via runAlloc; the slot just holds the latest
-			// pointer, and earlier objects stay alive through other references.
 			if v, ok := instr.(ssa.Value); ok {
 				add(v)
 			}
 		}
 	}
-	slotKinds := make([]fastSlotKind, len(index))
-	for v, idx := range index {
-		switch {
-		case isPlainIntType(v.Type()):
-			slotKinds[idx] = fastSlotInt
-		case isPlainBoolType(v.Type()):
-			slotKinds[idx] = fastSlotBool
-		}
-	}
-
-	// Compile block-local fast paths once. The dispatcher still uses the same
-	// SSA instruction stream; these plans only short-circuit hot cases such as
-	// Phis, int/bool arithmetic, and fused IndexAddr consumers.
-	fusedIndexAddr := make(map[*ssa.IndexAddr]ssa.Instruction)
-	blockPlans := make([]*blockPlan, len(fn.Blocks))
-	for _, block := range fn.Blocks {
-		var plan *blockPlan
-		ensurePlan := func() *blockPlan {
-			if plan == nil {
-				plan = &blockPlan{}
-			}
-			return plan
-		}
-		if fastPhis := compileFastPhis(block, index); len(fastPhis) > 0 {
-			ensurePlan().fastPhis = fastPhis
-		}
-		for i := 0; i+1 < len(block.Instrs); i++ {
-			instr := block.Instrs[i]
-			if indexAddr, ok := instr.(*ssa.IndexAddr); ok {
-				consumer := block.Instrs[i+1]
-				if isPlainIntSliceType(indexAddr.X.Type()) && fusableIndexAddrConsumer(indexAddr, consumer) {
-					fusedIndexAddr[indexAddr] = consumer
-					if ensurePlan().fusedIndexAddrConsumers == nil {
-						plan.fusedIndexAddrConsumers = make([]ssa.Instruction, len(block.Instrs))
-					}
-					plan.fusedIndexAddrConsumers[i] = consumer
-					if fastIndex, ok := compileFastIndexAddr(indexAddr, consumer, index); ok {
-						if plan.fastIndexAddrs == nil {
-							plan.fastIndexAddrs = make([]fastIndexAddr, len(block.Instrs))
-						}
-						plan.fastIndexAddrs[i] = fastIndex
-					}
-				}
-			}
-			if fast, ok := compileFastInstr(instr, index); ok {
-				if ensurePlan().fastInstrs == nil {
-					plan.fastInstrs = make([]fastInstr, len(block.Instrs))
-				}
-				plan.fastInstrs[i] = fast
-			}
-		}
-		if len(block.Instrs) > 0 {
-			last := len(block.Instrs) - 1
-			if fast, ok := compileFastInstr(block.Instrs[last], index); ok {
-				if ensurePlan().fastInstrs == nil {
-					plan.fastInstrs = make([]fastInstr, len(block.Instrs))
-				}
-				plan.fastInstrs[last] = fast
-			}
-		}
-		if plan != nil {
-			plan.fastBlockOps = compileFastBlockOps(block, plan)
-		}
-		if plan != nil {
-			blockPlans[block.Index] = plan
-		}
-	}
-	layout := &frameLayout{
-		index:          index,
-		slotKinds:      slotKinds,
-		fusedIndexAddr: fusedIndexAddr,
-		blockPlans:     blockPlans,
-	}
+	layout := &frameLayout{index: index}
 	actual, _ := p.layouts.LoadOrStore(fn, layout)
 	return actual.(*frameLayout)
 }
@@ -193,9 +101,6 @@ func (fr *frame) cell(v ssa.Value) (*Cell, bool) {
 	if !ok {
 		return nil, false
 	}
-	// Fast plans may update the typed cache without immediately rebuilding
-	// Cell.Value. Materialize before exposing the Cell to generic code.
-	fr.materializeSlot(idx)
 	return &fr.slots[idx], true
 }
 
@@ -207,7 +112,7 @@ func (fr *frame) setCell(v ssa.Value, val value.Value) {
 	if !ok {
 		panic(fmt.Sprintf("interp: %s: setCell on unslotted value %s (%T)", fr.fn.Name(), v.Name(), v))
 	}
-	fr.setSlotValue(idx, val)
+	fr.slots[idx].Value = val
 }
 
 // bindCell is used when a value first enters the frame: parameters, free
@@ -218,48 +123,10 @@ func (fr *frame) bindCell(v ssa.Value, val value.Value) {
 	if !ok {
 		panic(fmt.Sprintf("interp: %s: bindCell on unslotted value %s (%T)", fr.fn.Name(), v.Name(), v))
 	}
-	fr.slots[idx].Name = v.Name()
-	fr.slots[idx].Type = v.Type()
-	fr.setSlotValue(idx, val)
-}
-
-// setSlotValue keeps the generic Cell.Value and typed fast cache in sync.
-// Fast instruction runners can later read fastInt/fastBool directly when
-// the slot kind proves the value shape.
-func (fr *frame) setSlotValue(idx int, val value.Value) {
 	cell := &fr.slots[idx]
+	cell.Name = v.Name()
+	cell.Type = v.Type()
 	cell.Value = val
-	cell.fastDirty = false
-	if idx >= len(fr.slotKinds) {
-		return
-	}
-	switch fr.slotKinds[idx] {
-	case fastSlotInt:
-		if val.Kind() == value.KindInt {
-			cell.fastInt = val.Int()
-		}
-	case fastSlotBool:
-		if val.Kind() == value.KindBool {
-			cell.fastBool = val.Bool()
-		}
-	}
-}
-
-// materializeSlot rebuilds Cell.Value after a fast path has updated only the
-// typed cache and marked the slot dirty. Generic code must call this before
-// reading Cell.Value.
-func (fr *frame) materializeSlot(idx int) {
-	if idx >= len(fr.slotKinds) || !fr.slots[idx].fastDirty {
-		return
-	}
-	cell := &fr.slots[idx]
-	switch fr.slotKinds[idx] {
-	case fastSlotInt:
-		cell.Value = value.MakeInt(cell.fastInt)
-	case fastSlotBool:
-		cell.Value = value.MakeBool(cell.fastBool)
-	}
-	cell.fastDirty = false
 }
 
 // callSSA invokes an SSA function with the given args. Returns the
@@ -368,24 +235,12 @@ func (p *program) newFrameWithLayout(fn *ssa.Function, freeVars []*Cell, layout 
 	// The layout is shared, but slots are per-call. A recursive call to the
 	// same function gets a different frame with the same slotIndex mapping.
 	return &frame{
-		fn:         fn,
-		block:      fn.Blocks[0],
-		slots:      make([]Cell, len(layout.index)),
-		slotKinds:  layout.slotKinds,
-		slotIndex:  layout.index,
-		blockPlans: layout.blockPlans,
-		freeVars:   freeVars,
+		fn:        fn,
+		block:     fn.Blocks[0],
+		slots:     make([]Cell, len(layout.index)),
+		slotIndex: layout.index,
+		freeVars:  freeVars,
 	}
-}
-
-func (fr *frame) blockPlan() *blockPlan {
-	if fr.block == nil || fr.blockPlans == nil {
-		return nil
-	}
-	if idx := fr.block.Index; idx >= 0 && idx < len(fr.blockPlans) {
-		return fr.blockPlans[idx]
-	}
-	return nil
 }
 
 // zeroResultsFor returns the function's zero result tuple (one
@@ -422,36 +277,10 @@ func (p *program) runFrame(caller *frame, fr *frame, depth int) ([]value.Value, 
 	for fr.block != nil {
 		// Phi nodes are read at block entry, BEFORE any other instruction
 		// of the block runs. The semantic is "pick the edge from
-		// prevBlock". We compute all Phis from a snapshot of the
-		// current cell map so simultaneous updates don't see each
-		// other.
+		// prevBlock". We compute all Phis from a snapshot of the current
+		// values so simultaneous updates don't see each other.
 		if err := p.runBlockPhis(fr); err != nil {
 			return nil, err
-		}
-		if plan := fr.blockPlan(); plan != nil && len(plan.fastBlockOps) > 0 {
-			// Some blocks compile to a straight-line fast plan of int/bool
-			// ops ending in If/Jump. When present it runs the whole block and
-			// signals a jump, so the generic instruction loop below is skipped.
-			contState, err := p.runFastBlock(fr, plan.fastBlockOps)
-			if err != nil {
-				return nil, err
-			}
-			if contState == contJump {
-				continue
-			}
-		}
-
-		// Step through the rest of the instructions.
-		var ret []value.Value
-		var contState continuation
-		var err error
-		var fusedIndexAddrConsumers []ssa.Instruction
-		var fastInstrs []fastInstr
-		var fastIndexAddrs []fastIndexAddr
-		if plan := fr.blockPlan(); plan != nil {
-			fusedIndexAddrConsumers = plan.fusedIndexAddrConsumers
-			fastInstrs = plan.fastInstrs
-			fastIndexAddrs = plan.fastIndexAddrs
 		}
 	instrs:
 		for ip := 0; ip < len(fr.block.Instrs); ip++ {
@@ -460,47 +289,9 @@ func (p *program) runFrame(caller *frame, fr *frame, depth int) ([]value.Value, 
 			}
 			instr := fr.block.Instrs[ip]
 			if _, isPhi := instr.(*ssa.Phi); isPhi {
-				continue // already handled
+				continue // already handled at block entry
 			}
-			if ip < len(fastIndexAddrs) && fastIndexAddrs[ip].kind != fastIndexNone {
-				// Fast IndexAddr combines address calculation with its
-				// immediately-following load/store consumer when possible.
-				if p.runFastIndexAddr(fr, fastIndexAddrs[ip]) {
-					ip++
-					continue
-				}
-			}
-			if ip < len(fastInstrs) && fastInstrs[ip].kind != fastNone {
-				// Fast instructions are predecoded variants of common SSA
-				// operations. They only continue or jump (never return), so
-				// they carry no value tuple.
-				contState, err = p.runFastInstr(fr, fastInstrs[ip])
-				if err != nil {
-					return nil, err
-				}
-				switch contState {
-				case contNext:
-					continue
-				case contJump:
-					break instrs // restart outer loop with new fr.block
-				}
-			}
-			if ip < len(fusedIndexAddrConsumers) {
-				if next := fusedIndexAddrConsumers[ip]; next != nil {
-					// Generic fused path used when the specific typed fast
-					// IndexAddr plan did not apply at runtime.
-					indexAddr := instr.(*ssa.IndexAddr)
-					fused, err := p.tryRunFusedIndexAddr(fr, indexAddr, next)
-					if err != nil {
-						return nil, err
-					}
-					if fused {
-						ip++
-						continue
-					}
-				}
-			}
-			contState, ret, err = p.visitInstr(caller, fr, instr, depth)
+			contState, ret, err := p.visitInstr(caller, fr, instr, depth)
 			if err != nil {
 				return nil, err
 			}
@@ -508,7 +299,7 @@ func (p *program) runFrame(caller *frame, fr *frame, depth int) ([]value.Value, 
 			case contNext:
 				continue
 			case contJump:
-				break instrs // restart outer loop with new fr.block
+				break instrs // restart outer loop with the new fr.block
 			case contReturn:
 				return ret, nil
 			}
@@ -538,9 +329,6 @@ func (fr *frame) checkContextNow() error {
 // computed from a snapshot first, then assigned together — that
 // matches Go SSA semantics where Phis run "simultaneously".
 func (p *program) runBlockPhis(fr *frame) error {
-	if plan := fr.blockPlan(); plan != nil && len(plan.fastPhis) > 0 {
-		return p.runFastBlockPhis(fr, plan.fastPhis)
-	}
 	phiCount := 0
 	for _, instr := range fr.block.Instrs {
 		if _, ok := instr.(*ssa.Phi); !ok {

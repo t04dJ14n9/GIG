@@ -7,8 +7,6 @@ import (
 	"go/types"
 
 	"golang.org/x/tools/go/ssa"
-
-	"github.com/t04dJ14n9/gig/value"
 )
 
 type fastInstrKind uint8
@@ -76,17 +74,6 @@ type fastIndexAddr struct {
 	index     fastIntRef
 	dst       int
 	val       fastIntRef
-}
-
-type fastOpKind uint8
-
-const (
-	fastOpInstr fastOpKind = iota
-)
-
-type fastOp struct {
-	kind  fastOpKind
-	instr fastInstr
 }
 
 func compileFastPhis(block *ssa.BasicBlock, slots map[ssa.Value]int) []fastPhi {
@@ -168,18 +155,24 @@ func compileFastInstr(instr ssa.Instruction, slots map[ssa.Value]int) (fastInstr
 	return fastInstr{}, false
 }
 
-func compileFastBlockOps(block *ssa.BasicBlock, plan *blockPlan) []fastOp {
+// compileFastBlockOps returns a straight-line list of predecoded fast
+// instructions for a block, but only when every non-Phi instruction is a
+// fast op and the block ends in a fast If/Jump. In that case runFastBlock
+// can execute the whole block in a tight loop, skipping the generic
+// per-instruction dispatch. It returns nil (declining the whole-block
+// path) when any instruction needs the generic path.
+func compileFastBlockOps(block *ssa.BasicBlock, plan *blockPlan) []fastInstr {
 	if plan == nil {
 		return nil
 	}
-	ops := make([]fastOp, 0, len(block.Instrs))
+	ops := make([]fastInstr, 0, len(block.Instrs))
 	for i, instr := range block.Instrs {
 		switch instr.(type) {
 		case *ssa.Phi, *ssa.DebugRef:
 			continue
 		}
 		if i < len(plan.fastInstrs) && plan.fastInstrs[i].kind != fastNone {
-			ops = append(ops, fastOp{kind: fastOpInstr, instr: plan.fastInstrs[i]})
+			ops = append(ops, plan.fastInstrs[i])
 			continue
 		}
 		return nil
@@ -187,8 +180,7 @@ func compileFastBlockOps(block *ssa.BasicBlock, plan *blockPlan) []fastOp {
 	if len(ops) == 0 {
 		return nil
 	}
-	last := ops[len(ops)-1]
-	if last.kind != fastOpInstr || (last.instr.kind != fastIf && last.instr.kind != fastJump) {
+	if last := ops[len(ops)-1]; last.kind != fastIf && last.kind != fastJump {
 		return nil
 	}
 	return ops
@@ -306,25 +298,28 @@ func (p *program) runFastIndexAddr(fr *frame, instr fastIndexAddr) bool {
 	return false
 }
 
-func (p *program) runFastBlock(fr *frame, ops []fastOp) (continuation, []value.Value, error) {
+// runFastBlock executes a fully-fast block compiled by compileFastBlockOps.
+// Every op is a fast int/bool instruction and the last is an If/Jump, so a
+// normal return always comes from the control-transfer op; falling off the
+// end is a compiler invariant violation. Fast instructions never return a
+// value tuple, so this only signals a continuation.
+func (p *program) runFastBlock(fr *frame, ops []fastInstr) (continuation, error) {
 	if err := fr.checkContext(); err != nil {
-		return contNext, nil, err
+		return contNext, err
 	}
 	for _, op := range ops {
-		switch op.kind {
-		case fastOpInstr:
-			contState, ret, err := p.runFastInstr(fr, op.instr)
-			if err != nil || contState != contNext {
-				return contState, ret, err
-			}
-		default:
-			return contNext, nil, fmt.Errorf("interp: unsupported fast op kind %d", op.kind)
+		contState, err := p.runFastInstr(fr, op)
+		if err != nil || contState != contNext {
+			return contState, err
 		}
 	}
-	return contNext, nil, fmt.Errorf("interp: fast block for %s ended without control transfer", fr.fn.Name())
+	return contNext, fmt.Errorf("interp: fast block for %s ended without control transfer", fr.fn.Name())
 }
 
-func (p *program) runFastInstr(fr *frame, instr fastInstr) (continuation, []value.Value, error) {
+// runFastInstr executes one predecoded fast instruction. It only ever
+// signals contNext (arithmetic/comparison) or contJump (If/Jump); it never
+// returns from the function, so unlike visitInstr it carries no value tuple.
+func (p *program) runFastInstr(fr *frame, instr fastInstr) (continuation, error) {
 	switch instr.kind {
 	case fastIntBinOp:
 		x := instr.x.read(fr)
@@ -353,21 +348,21 @@ func (p *program) runFastInstr(fr *frame, instr fastInstr) (continuation, []valu
 		case token.GEQ:
 			fr.setFastBoolSlot(instr.dst, x >= y)
 		default:
-			return contNext, nil, fmt.Errorf("interp: unsupported fast int op %s", instr.op)
+			return contNext, fmt.Errorf("interp: unsupported fast int op %s", instr.op)
 		}
-		return contNext, nil, nil
+		return contNext, nil
 	case fastIf:
 		idx := 1
 		if fr.readFastBoolSlot(instr.condSlot) {
 			idx = 0
 		}
 		fr.prevBlock, fr.block = fr.block, fr.block.Succs[idx]
-		return contJump, nil, nil
+		return contJump, nil
 	case fastJump:
 		fr.prevBlock, fr.block = fr.block, fr.block.Succs[0]
-		return contJump, nil, nil
+		return contJump, nil
 	}
-	return contNext, nil, fmt.Errorf("interp: unsupported fast instruction kind %d", instr.kind)
+	return contNext, fmt.Errorf("interp: unsupported fast instruction kind %d", instr.kind)
 }
 
 func (fr *frame) setFastIntSlot(slot int, n int64) {

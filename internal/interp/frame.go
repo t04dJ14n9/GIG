@@ -75,7 +75,7 @@ type frameLayout struct {
 type blockPlan struct {
 	fusedIndexAddrConsumers []ssa.Instruction
 	fastPhis                []fastPhi
-	fastBlockOps            []fastOp
+	fastBlockOps            []fastInstr
 	fastInstrs              []fastInstr
 	fastIndexAddrs          []fastIndexAddr
 }
@@ -464,18 +464,15 @@ func (p *program) runFrame(caller *frame, fr *frame, depth int) ([]value.Value, 
 			return nil, err
 		}
 		if plan := fr.blockPlan(); plan != nil && len(plan.fastBlockOps) > 0 {
-			// Some blocks compile to a straight-line fast plan. If it handles
-			// the block completely, it returns a jump/return signal and the
-			// generic instruction loop below is skipped.
-			contState, ret, err := p.runFastBlock(fr, plan.fastBlockOps)
+			// Some blocks compile to a straight-line fast plan of int/bool
+			// ops ending in If/Jump. When present it runs the whole block and
+			// signals a jump, so the generic instruction loop below is skipped.
+			contState, err := p.runFastBlock(fr, plan.fastBlockOps)
 			if err != nil {
 				return nil, err
 			}
-			switch contState {
-			case contJump:
+			if contState == contJump {
 				continue
-			case contReturn:
-				return ret, nil
 			}
 		}
 
@@ -510,9 +507,9 @@ func (p *program) runFrame(caller *frame, fr *frame, depth int) ([]value.Value, 
 			}
 			if ip < len(fastInstrs) && fastInstrs[ip].kind != fastNone {
 				// Fast instructions are predecoded variants of common SSA
-				// operations. They must produce the same continuation signal
-				// as visitInstr.
-				contState, ret, err = p.runFastInstr(fr, fastInstrs[ip])
+				// operations. They only continue or jump (never return), so
+				// they carry no value tuple.
+				contState, err = p.runFastInstr(fr, fastInstrs[ip])
 				if err != nil {
 					return nil, err
 				}
@@ -521,8 +518,6 @@ func (p *program) runFrame(caller *frame, fr *frame, depth int) ([]value.Value, 
 					continue
 				case contJump:
 					break instrs // restart outer loop with new fr.block
-				case contReturn:
-					return ret, nil
 				}
 			}
 			if ip < len(fusedIndexAddrConsumers) {

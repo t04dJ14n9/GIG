@@ -4,7 +4,7 @@
 // The storage model is:
 //
 //   - Scalar locals live as immutable value.Value with the appropriate Kind
-//     stored in fr.cells[ssa.Value].Value.
+//     stored in the frame slot (Cell.Value) for that ssa.Value.
 //   - Composite locals are wrapped in a single-element addressable
 //     reflect.Value (built by reflect.New(rt).Elem() and stored as
 //     KindReflect). Field/IndexAddr/Slice operate on these reflect

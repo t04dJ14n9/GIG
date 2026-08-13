@@ -41,10 +41,6 @@ type frame struct {
 	slotKinds []fastSlotKind
 	slotIndex map[ssa.Value]int
 
-	// cells is the fallback store for values not assigned a slot, plus
-	// lazily-created side state. Most ordinary instruction results should use
-	// slots instead.
-	cells    map[ssa.Value]*Cell
 	addrRefs map[ssa.Value]addrRef
 
 	blockPlans []*blockPlan
@@ -106,12 +102,10 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 	}
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			// Alloc returns an address. It is intentionally kept out of the
-			// slot array because each execution of the same Alloc instruction
-			// in a loop must produce a fresh addressable object.
-			if _, ok := instr.(*ssa.Alloc); ok {
-				continue
-			}
+			// Every value-producing instruction gets a slot, including Alloc.
+			// Re-executing an Alloc (e.g. in a loop) still allocates a fresh
+			// addressable object via runAlloc; the slot just holds the latest
+			// pointer, and earlier objects stay alive through other references.
 			if v, ok := instr.(ssa.Value); ok {
 				add(v)
 			}
@@ -195,67 +189,38 @@ func (p *program) frameLayout(fn *ssa.Function) *frameLayout {
 }
 
 func (fr *frame) cell(v ssa.Value) (*Cell, bool) {
-	if fr.slotIndex != nil {
-		if idx, ok := fr.slotIndex[v]; ok {
-			// Fast plans may update the typed cache without immediately
-			// rebuilding Cell.Value. Materialize before exposing the Cell to
-			// generic instruction code.
-			fr.materializeSlot(idx)
-			return &fr.slots[idx], true
-		}
+	idx, ok := fr.slotIndex[v]
+	if !ok {
+		return nil, false
 	}
-	cell, ok := fr.cells[v]
-	return cell, ok
+	// Fast plans may update the typed cache without immediately rebuilding
+	// Cell.Value. Materialize before exposing the Cell to generic code.
+	fr.materializeSlot(idx)
+	return &fr.slots[idx], true
 }
 
-func (fr *frame) ensureCells(capHint int) {
-	if fr.cells != nil {
-		return
-	}
-	if capHint < 1 {
-		capHint = 1
-	}
-	fr.cells = make(map[ssa.Value]*Cell, capHint)
-}
-
-// setCell writes the runtime value for an SSA value. Reusing the Cell
-// avoids allocating a new *Cell every time a loop re-executes the same
-// static SSA instruction.
+// setCell writes the runtime value for an SSA value. Every value that can be
+// read or written is assigned a slot by frameLayout, so an unslotted value
+// here is an interpreter invariant violation.
 func (fr *frame) setCell(v ssa.Value, val value.Value) {
-	if fr.slotIndex != nil {
-		if idx, ok := fr.slotIndex[v]; ok {
-			fr.setSlotValue(idx, val)
-			return
-		}
+	idx, ok := fr.slotIndex[v]
+	if !ok {
+		panic(fmt.Sprintf("interp: %s: setCell on unslotted value %s (%T)", fr.fn.Name(), v.Name(), v))
 	}
-	if cell, ok := fr.cells[v]; ok {
-		cell.Value = val
-		return
-	}
-	fr.ensureCells(1)
-	fr.cells[v] = &Cell{Value: val}
+	fr.setSlotValue(idx, val)
 }
 
 // bindCell is used when a value first enters the frame: parameters, free
 // variables, and preallocated locals. Unlike setCell, it preserves the
 // source-facing name and type for diagnostics and addressable locals.
 func (fr *frame) bindCell(v ssa.Value, val value.Value) {
-	if fr.slotIndex != nil {
-		if idx, ok := fr.slotIndex[v]; ok {
-			fr.slots[idx].Name = v.Name()
-			fr.slots[idx].Type = v.Type()
-			fr.setSlotValue(idx, val)
-			return
-		}
+	idx, ok := fr.slotIndex[v]
+	if !ok {
+		panic(fmt.Sprintf("interp: %s: bindCell on unslotted value %s (%T)", fr.fn.Name(), v.Name(), v))
 	}
-	if cell, ok := fr.cells[v]; ok {
-		cell.Name = v.Name()
-		cell.Type = v.Type()
-		cell.Value = val
-		return
-	}
-	fr.ensureCells(1)
-	fr.cells[v] = &Cell{Name: v.Name(), Type: v.Type(), Value: val}
+	fr.slots[idx].Name = v.Name()
+	fr.slots[idx].Type = v.Type()
+	fr.setSlotValue(idx, val)
 }
 
 // setSlotValue keeps the generic Cell.Value and typed fast cache in sync.

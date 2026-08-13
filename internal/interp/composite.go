@@ -4,7 +4,7 @@
 // The storage model is:
 //
 //   - Scalar locals live as immutable value.Value with the appropriate Kind
-//     stored in fr.cells[ssa.Value].Value.
+//     stored in the frame slot (Cell.Value) for that ssa.Value.
 //   - Composite locals are wrapped in a single-element addressable
 //     reflect.Value (built by reflect.New(rt).Elem() and stored as
 //     KindReflect). Field/IndexAddr/Slice operate on these reflect
@@ -314,69 +314,6 @@ func indexAddrRefEligible(v ssa.Value) bool {
 	return true
 }
 
-func fusableIndexAddrConsumer(indexAddr *ssa.IndexAddr, consumer ssa.Instruction) bool {
-	if indexAddr == nil || consumer == nil {
-		return false
-	}
-	switch instr := consumer.(type) {
-	case *ssa.Store:
-		if instr.Addr != indexAddr {
-			return false
-		}
-	case *ssa.UnOp:
-		if instr.Op != token.MUL || instr.X != indexAddr {
-			return false
-		}
-	default:
-		return false
-	}
-	refs := indexAddr.Referrers()
-	if refs == nil || len(*refs) == 0 {
-		return false
-	}
-	found := false
-	for _, ref := range *refs {
-		if ref == consumer {
-			found = true
-			continue
-		}
-		if _, ok := ref.(*ssa.DebugRef); ok {
-			continue
-		}
-		return false
-	}
-	return found
-}
-
-func (p *program) tryRunFusedIndexAddr(fr *frame, indexAddr *ssa.IndexAddr, consumer ssa.Instruction) (bool, error) {
-	x, err := p.readValue(fr, indexAddr.X)
-	if err != nil {
-		return true, err
-	}
-	s, ok := x.IntSlice()
-	if !ok {
-		return false, nil
-	}
-	idxV, err := p.readValue(fr, indexAddr.Index)
-	if err != nil {
-		return true, err
-	}
-	idx := int(idxV.Int())
-	switch instr := consumer.(type) {
-	case *ssa.UnOp:
-		fr.setCell(instr, value.MakeInt(int64(s[idx])))
-		return true, nil
-	case *ssa.Store:
-		val, err := p.readValue(fr, instr.Val)
-		if err != nil {
-			return true, err
-		}
-		s[idx] = int(val.Int())
-		return true, nil
-	}
-	return false, nil
-}
-
 func isPlainIntSliceType(t types.Type) bool {
 	s, ok := t.Underlying().(*types.Slice)
 	if !ok {
@@ -655,9 +592,9 @@ func (p *program) runRange(fr *frame, instr *ssa.Range) (continuation, []value.V
 	default:
 		return contNext, nil, fmt.Errorf("interp: Range over %s not supported", rv.Kind())
 	}
-	fr.setCell(instr, value.MakeNil()) // sentinel; the iterator goes through fr.iters
-	// Stash the iterator in a side-channel keyed by ssa.Value so Next
-	// can find it. Simpler than packaging it inside value.Value.
+	// Stash the iterator in a side-channel keyed by ssa.Value so Next can find
+	// it (the Range value itself is never read). Simpler than packaging it
+	// inside value.Value.
 	if fr.iters == nil {
 		fr.iters = make(map[ssa.Value]*rangeIter)
 	}

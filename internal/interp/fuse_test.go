@@ -2,7 +2,6 @@ package interp
 
 import (
 	"context"
-	"go/token"
 	"reflect"
 	"testing"
 
@@ -11,52 +10,6 @@ import (
 	"github.com/t04dJ14n9/gig/internal/frontend"
 	"github.com/t04dJ14n9/gig/value"
 )
-
-func TestFusableIndexAddrConsumerRecognizesAdjacentSliceLoadAndStore(t *testing.T) {
-	const src = `
-func TouchSlice() int {
-	s := make([]int, 2)
-	s[0] = 7
-	x := s[0]
-	return x
-}
-`
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	fn := unit.Package().Func("TouchSlice")
-	if fn == nil {
-		t.Fatal("TouchSlice not found")
-	}
-
-	var sawStore, sawLoad bool
-	for _, block := range fn.Blocks {
-		for i := 0; i+1 < len(block.Instrs); i++ {
-			indexAddr, ok := block.Instrs[i].(*ssa.IndexAddr)
-			if !ok {
-				continue
-			}
-			switch next := block.Instrs[i+1].(type) {
-			case *ssa.Store:
-				if next.Addr == indexAddr && fusableIndexAddrConsumer(indexAddr, next) {
-					sawStore = true
-				}
-			case *ssa.UnOp:
-				if next.Op == token.MUL && next.X == indexAddr && fusableIndexAddrConsumer(indexAddr, next) {
-					sawLoad = true
-				}
-			}
-		}
-	}
-	if !sawStore {
-		t.Fatal("did not find a fusable adjacent IndexAddr -> Store pair")
-	}
-	if !sawLoad {
-		t.Fatal("did not find a fusable adjacent IndexAddr -> UnOp(*) pair")
-	}
-}
 
 func TestRunSliceFromMakeSliceArrayProducesNativeIntSlice(t *testing.T) {
 	const src = `
@@ -94,7 +47,7 @@ func MakeSliceArray() int {
 	if alloc == nil || slice == nil {
 		t.Fatalf("expected SSA Alloc+Slice, got alloc=%v slice=%v", alloc, slice)
 	}
-	fr := prog.newFrame(fn, nil)
+	fr := prog.newFrame(fn)
 	if _, _, err := prog.runAlloc(fr, alloc); err != nil {
 		t.Fatalf("runAlloc: %v", err)
 	}
@@ -108,172 +61,6 @@ func MakeSliceArray() int {
 	if _, ok := got.IntSlice(); !ok {
 		t.Fatalf("runSlice stored %s, want native IntSlice", got.Kind())
 	}
-}
-
-func TestFrameLayoutCachesFusableIndexAddrConsumers(t *testing.T) {
-	const src = `
-func TouchSlice() int {
-	s := make([]int, 2)
-	s[0] = 7
-	x := s[0]
-	return x
-}
-`
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	fn := unit.Package().Func("TouchSlice")
-	if fn == nil {
-		t.Fatal("TouchSlice not found")
-	}
-
-	layout := (&program{}).frameLayout(fn)
-	if len(layout.fusedIndexAddr) == 0 {
-		t.Fatal("frame layout did not cache any fusable IndexAddr consumers")
-	}
-	var sawBlockPlan bool
-	var sawFastIndexAddr bool
-	for _, plan := range layout.blockPlans {
-		for _, consumer := range plan.fusedIndexAddrConsumers {
-			if consumer != nil {
-				sawBlockPlan = true
-			}
-		}
-		for _, instr := range plan.fastIndexAddrs {
-			if instr.kind != fastIndexNone {
-				sawFastIndexAddr = true
-			}
-		}
-	}
-	if !sawBlockPlan {
-		t.Fatal("frame layout did not cache fusable consumers by block instruction index")
-	}
-	if !sawFastIndexAddr {
-		t.Fatal("frame layout did not cache typed int-slice IndexAddr plan")
-	}
-	for indexAddr, consumer := range layout.fusedIndexAddr {
-		if !fusableIndexAddrConsumer(indexAddr, consumer) {
-			t.Fatalf("cached non-fusable consumer %T for %s", consumer, indexAddr.Name())
-		}
-	}
-}
-
-func TestFrameLayoutCachesFastIntLoopPlan(t *testing.T) {
-	const src = `
-func ArithmeticSum() int {
-	sum := 0
-	for i := 1; i <= 1000; i++ {
-		sum = sum + i
-	}
-	return sum
-}
-`
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	fn := unit.Package().Func("ArithmeticSum")
-	if fn == nil {
-		t.Fatal("ArithmeticSum not found")
-	}
-
-	layout := (&program{}).frameLayout(fn)
-	if len(layout.blockPlans) != len(fn.Blocks) {
-		t.Fatalf("block plan table length = %d, want %d", len(layout.blockPlans), len(fn.Blocks))
-	}
-	var sawPhi, sawBinOp, sawIf, sawJump bool
-	var sawFastBlock bool
-	for _, plan := range layout.blockPlans {
-		if plan == nil {
-			continue
-		}
-		if len(plan.fastBlockOps) > 0 {
-			sawFastBlock = true
-		}
-		if len(plan.fastPhis) > 0 {
-			sawPhi = true
-		}
-		for _, instr := range plan.fastInstrs {
-			switch instr.kind {
-			case fastIntBinOp:
-				sawBinOp = true
-			case fastIf:
-				sawIf = true
-			case fastJump:
-				sawJump = true
-			}
-		}
-	}
-	if !sawPhi {
-		t.Fatal("frame layout did not cache fast int phi plan")
-	}
-	if !sawBinOp {
-		t.Fatal("frame layout did not cache fast int binop plan")
-	}
-	if !sawIf {
-		t.Fatal("frame layout did not cache fast if plan")
-	}
-	if !sawJump {
-		t.Fatal("frame layout did not cache fast jump plan")
-	}
-	if !sawFastBlock {
-		t.Fatal("frame layout did not cache a full fast block plan")
-	}
-	var sawIntSlot, sawBoolSlot bool
-	for _, kind := range layout.slotKinds {
-		switch kind {
-		case fastSlotInt:
-			sawIntSlot = true
-		case fastSlotBool:
-			sawBoolSlot = true
-		}
-	}
-	if !sawIntSlot {
-		t.Fatal("frame layout did not mark any typed int slots")
-	}
-	if !sawBoolSlot {
-		t.Fatal("frame layout did not mark any typed bool slots")
-	}
-}
-
-func TestTypedFastSlotMaterializesBeforeGenericRead(t *testing.T) {
-	const src = `
-func Identity(x int) int {
-	return x
-}
-`
-	ctx := context.Background()
-	unit, err := frontend.NewBuilder().Build(ctx, frontend.Source{Content: src}, stubEnv{}, frontend.Config{})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	fn := unit.Package().Func("Identity")
-	if fn == nil {
-		t.Fatal("Identity not found")
-	}
-	prog := &program{}
-	layout := prog.frameLayout(fn)
-	if len(fn.Params) != 1 {
-		t.Fatalf("Identity params = %d, want 1", len(fn.Params))
-	}
-	param := fn.Params[0]
-	slot, ok := layout.index[param]
-	if !ok {
-		t.Fatal("parameter is not slot-indexed")
-	}
-	if got := layout.slotKinds[slot]; got != fastSlotInt {
-		t.Fatalf("parameter slot kind = %v, want fastSlotInt", got)
-	}
-	fr := prog.newFrameWithLayout(fn, nil, layout)
-	fr.setFastIntSlot(slot, 42)
-	got, err := prog.readValue(fr, param)
-	if err != nil {
-		t.Fatalf("readValue: %v", err)
-	}
-	expectInt(t, []value.Value{got}, 42)
 }
 
 func TestMakeFuncValueSupportsDirectAndReflectCalls(t *testing.T) {

@@ -123,12 +123,8 @@ func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, de
 
 	case *ssa.Select:
 		return p.runSelect(fr, x)
-
-	case *ssa.Phi:
-		// Already handled by runBlockPhis, but defensively no-op here
-		// in case dispatch reaches us anyway.
-		return contNext, nil, nil
 	}
+	// Phis are resolved at block entry by runBlockPhis and never reach here.
 	return contNext, nil,
 		fmt.Errorf("interp: %s: unsupported instruction %T at %s",
 			fr.fn.Name(), instr, instr)
@@ -136,7 +132,7 @@ func (p *program) visitInstr(caller *frame, fr *frame, instr ssa.Instruction, de
 
 // readValue resolves any ssa.Value reference to a runtime Value. It
 // covers: parameters, locals, prior instruction results, *ssa.Const,
-// *ssa.Global (read), and *ssa.Function (Phase 6.2+).
+// *ssa.Global (read), and *ssa.Function.
 func (p *program) readValue(fr *frame, v ssa.Value) (value.Value, error) {
 	if v == nil {
 		return value.MakeNil(), nil
@@ -721,16 +717,8 @@ func (p *program) callBuiltin(caller *frame, fr *frame, b *ssa.Builtin, ssaArgs 
 		m.SetMapIndex(k, reflect.Value{})
 		return value.MakeNil(), nil
 	case "print", "println":
-		// Best-effort: print to host stdout. A full implementation
-		// would route into the interpreter's output capture (Phase 6.7);
-		// for the current pass-the-tests goal this matches Go's
-		// print/println behaviour well enough — most tests don't
-		// assert on print output.
-		parts := make([]any, len(args))
-		for i, a := range args {
-			parts[i] = a.Interface()
-		}
-		_ = parts // we deliberately drop the print to keep tests deterministic
+		// print/println are intentionally no-ops: interpreted output is
+		// dropped so tests stay deterministic.
 		return value.MakeNil(), nil
 	case "panic":
 		if len(args) > 0 {

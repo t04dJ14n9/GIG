@@ -47,7 +47,7 @@ func MakeSliceArray() int {
 	if alloc == nil || slice == nil {
 		t.Fatalf("expected SSA Alloc+Slice, got alloc=%v slice=%v", alloc, slice)
 	}
-	fr := prog.newFrame(fn, nil)
+	fr := prog.newFrame(fn)
 	if _, _, err := prog.runAlloc(fr, alloc); err != nil {
 		t.Fatalf("runAlloc: %v", err)
 	}

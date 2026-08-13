@@ -34,15 +34,13 @@ type frame struct {
 	block     *ssa.BasicBlock // current basic block; nil means the frame is done
 	prevBlock *ssa.BasicBlock // predecessor used to select Phi edges
 
-	// slots is the hot path for SSA values known at layout time. The key is
-	// the ssa.Value object identity, not Value.Name(), because SSA names are
-	// only diagnostic and are not guaranteed to be unique.
+	// slots holds one Cell per SSA value assigned by frameLayout. slotIndex
+	// maps by ssa.Value object identity, not Value.Name(), because SSA names
+	// are only diagnostic and are not guaranteed to be unique.
 	slots     []Cell
 	slotIndex map[ssa.Value]int
 
 	addrRefs map[ssa.Value]addrRef
-
-	freeVars []*Cell
 	iters    map[ssa.Value]*rangeIter
 
 	// defer / panic / recover state.
@@ -143,9 +141,8 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 		return nil, fmt.Errorf("interp: function %s has no body", fn.Name())
 	}
 
-	fr := p.newFrame(fn, freeVars)
+	fr := p.newFrame(fn)
 	fr.ctx = ctx
-	fr.cancelTicks = 0
 
 	// Bind parameters.
 	for i, param := range fn.Params {
@@ -220,7 +217,7 @@ func (p *program) callSSA(ctx context.Context, caller *frame, fn *ssa.Function, 
 	return results, err
 }
 
-func (p *program) newFrame(fn *ssa.Function, freeVars []*Cell) *frame {
+func (p *program) newFrame(fn *ssa.Function) *frame {
 	// The slot index is shared across calls; slots are per-call, so a
 	// recursive call to the same function gets a fresh frame reusing the same
 	// index mapping.
@@ -230,7 +227,6 @@ func (p *program) newFrame(fn *ssa.Function, freeVars []*Cell) *frame {
 		block:     fn.Blocks[0],
 		slots:     make([]Cell, len(index)),
 		slotIndex: index,
-		freeVars:  freeVars,
 	}
 }
 
@@ -344,11 +340,8 @@ func (p *program) runBlockPhis(fr *frame) error {
 	}
 
 	for idx := 0; idx < phiCount; idx++ {
-		instr := fr.block.Instrs[idx]
-		phi, ok := instr.(*ssa.Phi)
-		if !ok {
-			break // Phis are always at block start.
-		}
+		// Indices below phiCount are the block's leading Phis by construction.
+		phi := fr.block.Instrs[idx].(*ssa.Phi)
 		// Find which predecessor edge we came in from.
 		var picked ssa.Value
 		for i, pred := range fr.block.Preds {

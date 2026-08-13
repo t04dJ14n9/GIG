@@ -592,9 +592,9 @@ func (p *program) runRange(fr *frame, instr *ssa.Range) (continuation, []value.V
 	default:
 		return contNext, nil, fmt.Errorf("interp: Range over %s not supported", rv.Kind())
 	}
-	fr.setCell(instr, value.MakeNil()) // sentinel; the iterator goes through fr.iters
-	// Stash the iterator in a side-channel keyed by ssa.Value so Next
-	// can find it. Simpler than packaging it inside value.Value.
+	// Stash the iterator in a side-channel keyed by ssa.Value so Next can find
+	// it (the Range value itself is never read). Simpler than packaging it
+	// inside value.Value.
 	if fr.iters == nil {
 		fr.iters = make(map[ssa.Value]*rangeIter)
 	}

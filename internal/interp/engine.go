@@ -52,10 +52,8 @@ func (defaultEngine) NewProgram(ctx context.Context, unit frontend.Unit, env hos
 	if err := p.allocateGlobals(); err != nil {
 		return nil, err
 	}
-	// init() runs once at construction so the Go semantics of
-	// package-level initialisation are honoured. The vertical slice
-	// has no globals-with-bodies, so this is currently a no-op for the
-	// programs we test, but the call site is kept honest.
+	// init() runs once at construction so the Go semantics of package-level
+	// initialisation are honoured.
 	if err := p.runInit(ctx); err != nil {
 		return nil, err
 	}
@@ -132,9 +130,8 @@ func (p *program) allocateGlobals() error {
 }
 
 // runInit invokes the package's init() function once at construction.
-// Phase 6 vertical slice has nothing meaningful to put through init,
-// but a missing function is also fine: SSA only emits init when there
-// is something to do.
+// runInit runs the package init function if one exists. A missing init is
+// fine: SSA only emits init when there is something to do.
 func (p *program) runInit(ctx context.Context) error {
 	fn := p.ssaPkg.Func("init")
 	if fn == nil {

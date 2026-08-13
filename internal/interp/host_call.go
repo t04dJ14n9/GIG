@@ -18,6 +18,18 @@ import (
 	"github.com/t04dJ14n9/gig/value"
 )
 
+// hostPkgPath returns the import path of the package that declares fn,
+// preferring the SSA package and falling back to the type-checker object.
+func hostPkgPath(fn *ssa.Function) string {
+	if fn.Pkg != nil && fn.Pkg.Pkg != nil {
+		return fn.Pkg.Pkg.Path()
+	}
+	if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
+		return obj.Pkg().Path()
+	}
+	return ""
+}
+
 // callHostFunc dispatches a body-less *ssa.Function to the host
 // environment. The function name and package path come from the SSA
 // node; the host bridge resolves them to a host.Function. Generated
@@ -27,12 +39,7 @@ func (p *program) callHostFunc(ctx context.Context, fn *ssa.Function, args []val
 	if p.env == nil {
 		return nil, fmt.Errorf("interp: %s: no host.Environment registered", fn.Name())
 	}
-	pkgPath := ""
-	if fn.Pkg != nil && fn.Pkg.Pkg != nil {
-		pkgPath = fn.Pkg.Pkg.Path()
-	} else if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-		pkgPath = obj.Pkg().Path()
-	}
+	pkgPath := hostPkgPath(fn)
 	// Method on a host type — dispatch through reflect.MethodByName on
 	// the receiver. SSA emits these with the receiver as args[0].
 	if fn.Signature.Recv() != nil && len(args) > 0 {
@@ -58,12 +65,7 @@ func (p *program) callHostFuncDirect(fn *ssa.Function, args []value.Value) ([]va
 	if p.env == nil {
 		return nil, false, fmt.Errorf("interp: %s: no host.Environment registered", fn.Name())
 	}
-	pkgPath := ""
-	if fn.Pkg != nil && fn.Pkg.Pkg != nil {
-		pkgPath = fn.Pkg.Pkg.Path()
-	} else if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-		pkgPath = obj.Pkg().Path()
-	}
+	pkgPath := hostPkgPath(fn)
 	if fn.Signature.Recv() != nil && len(args) > 0 {
 		return p.invokeMethodOnDirectResult(args[0], fn.Name(), args[1:])
 	}

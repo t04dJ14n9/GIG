@@ -41,13 +41,9 @@ type deferRecord struct {
 
 func (p *program) runDefer(fr *frame, instr *ssa.Defer) (continuation, []value.Value, error) {
 	common := instr.Common()
-	args := make([]value.Value, len(common.Args))
-	for i, a := range common.Args {
-		v, err := p.readValue(fr, a)
-		if err != nil {
-			return contNext, nil, err
-		}
-		args[i] = v
+	args, err := p.readArgs(fr, common.Args)
+	if err != nil {
+		return contNext, nil, err
 	}
 	rec := &deferRecord{args: args}
 	// `defer recv.Method(args)` is modelled by SSA as an Invoke whose

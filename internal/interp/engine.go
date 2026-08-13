@@ -1,10 +1,5 @@
 // engine.go is the default interp.Engine implementation. It builds
 // Programs from frontend Units and exposes the per-call entry point.
-//
-// Phase 6 vertical slice: this engine runs interpreted Go code limited
-// to scalar arithmetic, control flow, function calls, local Alloc/Store,
-// and Phi merges. Composite types, closures, defer/panic/recover,
-// goroutines, and host calls are added in subsequent slices.
 package interp
 
 import (
@@ -48,7 +43,6 @@ func (defaultEngine) NewProgram(ctx context.Context, unit frontend.Unit, env hos
 	}
 	p := &program{
 		ssaPkg:    unit.Package(),
-		fset:      unit.FileSet(),
 		env:       env,
 		converter: value.DefaultConverter(),
 		resolver:  newTypeResolver(env, unit.Package().Pkg.Path()),
@@ -75,7 +69,6 @@ const defaultMaxDepth = 1024
 // construction time (matching gofun and Go semantics).
 type program struct {
 	ssaPkg      *ssa.Package
-	fset        any // token.FileSet, kept abstract here.
 	env         host.Environment
 	converter   value.Converter
 	resolver    *typeResolver

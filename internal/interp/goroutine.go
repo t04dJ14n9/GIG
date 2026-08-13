@@ -106,11 +106,6 @@ func (p *program) runSelect(fr *frame, instr *ssa.Select) (continuation, []value
 	if !instr.Blocking {
 		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectDefault})
 	}
-	type recvSlot struct {
-		idx      int
-		elemRT   reflect.Type
-		assigned bool
-	}
 	for _, st := range instr.States {
 		ch, err := p.readValue(fr, st.Chan)
 		if err != nil {

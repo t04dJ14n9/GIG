@@ -1,11 +1,6 @@
 // Package diag carries diagnostics produced during parse, type-check, and SSA
-// construction in the new clean-SSA pipeline. It is intentionally small: a
-// single Diagnostic record plus a Severity enum, with no dependencies on
-// frontend or interp internals.
-//
-// This package is part of the v2 clean-SSA refactor described in
-// docs/PLAN.md. It does not yet replace the legacy compiler error paths;
-// those continue to use stdlib errors during the transition.
+// construction. It is intentionally small: a single Diagnostic record plus a
+// Severity enum, with no dependencies on frontend or interp internals.
 package diag
 
 import (

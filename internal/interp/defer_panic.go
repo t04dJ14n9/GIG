@@ -26,7 +26,6 @@ import (
 type deferRecord struct {
 	fn   value.Value   // function value (possibly a closure)
 	args []value.Value // snapshot of args
-	pos  string        // for diagnostics
 	// For builtins (close, recover, etc) we keep the SSA op around.
 	builtin *ssa.Builtin
 	// fnSSA: when the call target is *ssa.Function we can call it
@@ -42,13 +41,9 @@ type deferRecord struct {
 
 func (p *program) runDefer(fr *frame, instr *ssa.Defer) (continuation, []value.Value, error) {
 	common := instr.Common()
-	args := make([]value.Value, len(common.Args))
-	for i, a := range common.Args {
-		v, err := p.readValue(fr, a)
-		if err != nil {
-			return contNext, nil, err
-		}
-		args[i] = v
+	args, err := p.readArgs(fr, common.Args)
+	if err != nil {
+		return contNext, nil, err
 	}
 	rec := &deferRecord{args: args}
 	// `defer recv.Method(args)` is modelled by SSA as an Invoke whose

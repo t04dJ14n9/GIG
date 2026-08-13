@@ -18,7 +18,6 @@ import (
 )
 
 const embeddedHostModPath = "example.com/gig-embedded-parity"
-const embeddedHostImportPath = embeddedHostModPath + "/host"
 
 type embeddedParityCase struct {
 	buildOpts          []gig.BuildOption
@@ -187,15 +186,4 @@ func normalizeResult(v any) string {
 		return strings.TrimSpace(fmt.Sprintf("%v", v))
 	}
 	return "<non-string>"
-}
-
-func newBoundaryRejectionRegistry() importer.PackageRegistry {
-	reg := importer.NewRegistry()
-	pkg := reg.RegisterPackage(embeddedHostImportPath, "host")
-	pkg.AddFunction("AcceptAny", hostAcceptAny, "")
-	return reg
-}
-
-func hostAcceptAny(v any) string {
-	return fmt.Sprintf("host:%T", v)
 }

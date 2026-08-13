@@ -1,8 +1,8 @@
 // ops.go is the instruction dispatcher. It pattern-matches on
-// ssa.Instruction concrete types and routes each one to a small
-// handler. Phase 6 vertical slice covers scalar arithmetic, control
-// flow, function calls, and Alloc/Store. Composite types, closures,
-// host calls, defer/panic/recover, and concurrency follow in 6.2+.
+// ssa.Instruction concrete types and routes each one to a small handler
+// covering scalar arithmetic, control flow, function calls, Alloc/Store,
+// composite types, closures, host calls, defer/panic/recover, and
+// concurrency.
 package interp
 
 import (
@@ -444,6 +444,20 @@ func (p *program) runChangeInterface(fr *frame, instr *ssa.ChangeInterface) (con
 	return contNext, nil, nil
 }
 
+// readArgs materializes SSA call arguments into interpreter values,
+// preserving left-to-right evaluation order.
+func (p *program) readArgs(fr *frame, ssaArgs []ssa.Value) ([]value.Value, error) {
+	args := make([]value.Value, len(ssaArgs))
+	for i, a := range ssaArgs {
+		v, err := p.readValue(fr, a)
+		if err != nil {
+			return nil, err
+		}
+		args[i] = v
+	}
+	return args, nil
+}
+
 func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) (continuation, []value.Value, error) {
 	common := instr.Common()
 	// Interface method invocation: x.M(...) where x: I (interface).
@@ -454,13 +468,9 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 		if err != nil {
 			return contNext, nil, err
 		}
-		args := make([]value.Value, len(common.Args))
-		for i, a := range common.Args {
-			v, err := p.readValue(fr, a)
-			if err != nil {
-				return contNext, nil, err
-			}
-			args[i] = v
+		args, err := p.readArgs(fr, common.Args)
+		if err != nil {
+			return contNext, nil, err
 		}
 		if stored, ok, err := p.invokeMethodOnDirect(recvV, common.Method.Name(), args); err != nil {
 			return contNext, nil, err
@@ -490,13 +500,9 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 	}
 	// Direct call to *ssa.Function — the common case.
 	if fn, ok := common.Value.(*ssa.Function); ok {
-		args := make([]value.Value, len(common.Args))
-		for i, a := range common.Args {
-			v, err := p.readValue(fr, a)
-			if err != nil {
-				return contNext, nil, err
-			}
-			args[i] = v
+		args, err := p.readArgs(fr, common.Args)
+		if err != nil {
+			return contNext, nil, err
 		}
 		// Body-less SSA functions are external host symbols (fmt.Sprintf,
 		// etc.) declared via the importer but not implemented in the
@@ -543,13 +549,9 @@ func (p *program) runCall(caller *frame, fr *frame, instr *ssa.Call, depth int) 
 	}
 	if fn, ok := target.Func(); ok {
 		if interpreted, ok := fn.(*interpretedFunc); ok {
-			args := make([]value.Value, len(common.Args))
-			for i, a := range common.Args {
-				v, err := p.readValue(fr, a)
-				if err != nil {
-					return contNext, nil, err
-				}
-				args[i] = v
+			args, err := p.readArgs(fr, common.Args)
+			if err != nil {
+				return contNext, nil, err
 			}
 			results, err := interpreted.CallContext(fr.ctx, args, depth+1)
 			if err != nil {

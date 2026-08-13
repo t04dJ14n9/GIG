@@ -1,11 +1,10 @@
 // Package interp is the direct SSA interpreter. It walks the SSA tree
 // produced by frontend, mapping each ssa.Value to a *Cell and dispatching
 // on instruction type. There is no bytecode, no opcode table, and no VM
-// pool; see docs/PLAN.md for rationale.
+// pool.
 //
-// Phase 1 ships only the type and interface declarations. The instruction
-// dispatch, frame execution loop, defer/panic/recover, and goroutines all
-// land in Phase 6.
+// It implements instruction dispatch, the frame execution loop,
+// defer/panic/recover, goroutines, channels, and select.
 package interp
 
 import (

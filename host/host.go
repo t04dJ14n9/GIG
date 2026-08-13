@@ -1,10 +1,6 @@
-// Package host defines the explicit external Go environment that replaces
-// the global importer/registry pair used by the legacy gig pipeline. See
-// docs/PLAN.md.
-//
-// At Phase 1 only the interface surface is defined. Concrete
-// constructors (NewEnvironment, StandardEnvironment) and the bridges from
-// the existing importer/registry land in Phase 2.
+// Package host defines the explicit external Go environment used by the
+// interpreter. FromRegistry bridges an importer.PackageRegistry into an
+// Environment.
 package host
 
 import (

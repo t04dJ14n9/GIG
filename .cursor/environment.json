@@ -1,0 +1,4 @@
+{
+  "name": "Gig",
+  "install": "./scripts/cloud-agent-install.sh"
+}
